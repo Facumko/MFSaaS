@@ -4,7 +4,7 @@ export interface IUser {
   id: string;
   username: string;
   fullName: string;
-  role: 'owner' | 'seller' | 'delivery' | 'manager' | 'unknown';
+  role: 'owner' | 'seller' | 'delivery' | 'manager' | 'depot' | 'unknown';
   roleId?: string;
   roleName?: string;
   permissions: string[];

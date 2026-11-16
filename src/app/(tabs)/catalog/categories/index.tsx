@@ -24,9 +24,9 @@ import { ICategory } from '../../../../types';
 export default function CategoriesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { canManageCategories, canManageCategoryStatus } = usePermissions();
-  useEffect(() => { if (!canManageCategories) router.replace('/(tabs)/catalog' as any); }, [canManageCategories, router]);
-  const { categories, loading, error, refetch, search, setSearch } = useCategories(canManageCategories);
+  const { canViewCategories, canManageCategories, canManageCategoryStatus } = usePermissions();
+  useEffect(() => { if (!canViewCategories) router.replace('/(tabs)/catalog' as any); }, [canViewCategories, router]);
+  const { categories, loading, error, refetch, search, setSearch } = useCategories(canViewCategories);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const parentNameOf = (category: ICategory) =>
@@ -87,8 +87,8 @@ export default function CategoriesListScreen() {
       <CategoryCard
         category={item}
         parentName={parentNameOf(item)}
-        onPress={() => !isBusy && handleEdit(item)}
-        onLongPress={() => !isBusy && handleLongPress(item)}
+        onPress={() => canManageCategories && !isBusy && handleEdit(item)}
+        onLongPress={() => canManageCategories && !isBusy && handleLongPress(item)}
         onToggleActive={canManageCategoryStatus ? () => handleToggleActive(item) : undefined}
         togglingActive={isBusy}
       />
@@ -155,7 +155,7 @@ export default function CategoriesListScreen() {
         )}
       </View>
 
-      <Text style={styles.hint}>{canManageCategoryStatus ? 'Mantené presionada una categoría para más acciones' : 'Tocá una categoría para editarla'}</Text>
+      <Text style={styles.hint}>{canManageCategories ? 'Mantené presionada una categoría para más acciones' : 'Categorías disponibles en el catálogo'}</Text>
 
       {/* List */}
       {categories.length > 0 ? (
@@ -174,13 +174,13 @@ export default function CategoriesListScreen() {
       )}
 
       {/* FAB - Create Category */}
-      <TouchableOpacity
+      {canManageCategories && <TouchableOpacity
         style={[styles.fab, { bottom: insets.bottom + spacing.lg }]}
         onPress={handleCreate}
         activeOpacity={0.8}
       >
         <Ionicons name="add" size={24} color={colors.textInverse} />
-      </TouchableOpacity>
+      </TouchableOpacity>}
     </View>
   );
 }

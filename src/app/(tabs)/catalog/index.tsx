@@ -21,7 +21,7 @@ import { IProduct } from "../../../types/api.types";
 
 export default function CatalogScreen() {
   const router = useRouter();
-  const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
+  const { canManageProducts, canViewCategories, canManageCategories, canViewCatalog } = usePermissions();
   useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
   // Categorías: conectadas al backend real (endpoint /categories).
@@ -121,7 +121,7 @@ export default function CatalogScreen() {
             <Ionicons name="cube-outline" size={17} color={colors.primary} />
             <Text style={styles.manageCategoriesText}>Productos</Text>
           </TouchableOpacity>}
-          {canManageCategories && <TouchableOpacity
+          {canViewCategories && <TouchableOpacity
             style={styles.manageCategoriesButton}
             onPress={() => router.push("/(tabs)/catalog/categories" as any)}
           >
