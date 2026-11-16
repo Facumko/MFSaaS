@@ -5,13 +5,13 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SelectField } from "../../../components/ui/SelectField";
 import { useCategories } from "../../../hooks";
 import { usePermissions } from "../../../hooks/usePermissions";
 import { productsService } from "../../../services/api/productsService";
@@ -43,8 +43,8 @@ export default function CatalogScreen() {
   // Buscador de productos (reactivo, con debounce)
   const [search, setSearch] = useState("");
 
-  // Filtro de categorías: se aplica directo al tocar un chip, sin modal
-  // intermedio ni paso de "aplicar" (multi-selección simple).
+  // Filtro de categorías: se aplica directo al elegir en el desplegable,
+  // sin paso de "aplicar" (multi-selección simple).
   const [appliedCategoryIds, setAppliedCategoryIds] = useState<string[]>([]);
 
   const itemCount = useCartStore((state) => state.itemCount());
@@ -142,7 +142,7 @@ export default function CatalogScreen() {
         />
       </View>
 
-      {/* Chips horizontales de categoría: única vía de filtrado */}
+      {/* Desplegable de categorías (multi-selección con búsqueda): única vía de filtrado */}
       <View style={styles.filterBar}>
         {loadingCategories ? (
           <ActivityIndicator color={colors.primary} style={{ marginRight: spacing.sm }} />
@@ -153,31 +153,16 @@ export default function CatalogScreen() {
             </Text>
           </TouchableOpacity>
         ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.chipsScroll}
-            contentContainerStyle={styles.chipsScrollContent}
-          >
-            {categories.map((cat) => {
-              const active = appliedCategoryIds.includes(cat.id);
-              return (
-                <TouchableOpacity
-                  key={cat.id}
-                  style={[styles.categoryChip, active && styles.categoryChipActive]}
-                  onPress={() => toggleCategory(cat.id)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text
-                    style={[styles.categoryText, active && styles.categoryTextActive]}
-                  >
-                    {cat.name}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          <View style={styles.filterSelect}>
+            <SelectField
+              multiple
+              options={categories.map((cat) => ({ value: cat.id, label: cat.name }))}
+              values={appliedCategoryIds}
+              onChangeValues={setAppliedCategoryIds}
+              placeholder="Todas las categorías"
+              searchPlaceholder="Escribí para buscar una categoría..."
+            />
+          </View>
         )}
 
         {activeFilterCount > 0 && (
@@ -355,7 +340,7 @@ const styles = StyleSheet.create({
   },
   filterBar: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     backgroundColor: colors.surface,
@@ -363,35 +348,15 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
     gap: spacing.sm,
   },
-  chipsScroll: {
+  filterSelect: {
     flex: 1,
-  },
-  chipsScrollContent: {
-    gap: spacing.sm,
-    alignItems: "center",
   },
   chipsErrorContainer: {
     flex: 1,
   },
-  categoryChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    backgroundColor: colors.primaryLight,
-  },
-  categoryChipActive: {
-    backgroundColor: colors.primary,
-  },
-  categoryText: {
-    color: colors.primary,
-    ...typography.caption,
-    fontWeight: "500",
-  },
-  categoryTextActive: {
-    color: colors.textInverse,
-  },
   clearLink: {
     paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.md,
   },
   clearLinkText: {
     color: colors.error,

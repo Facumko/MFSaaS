@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SelectField } from '../../../../components/ui/SelectField';
 import { FormErrorBanner } from '../../../../components/ui/FormErrorBanner';
 import { catalogService } from '../../../../services/api/catalogService';
 import { usePermissions } from '../../../../hooks/usePermissions';
@@ -279,42 +280,17 @@ export default function CategoryFormScreen() {
                 control={control}
                 name="parentCategoryId"
                 render={({ field: { onChange } }) => (
-                  <View style={styles.chipsWrap}>
-                    <TouchableOpacity
-                      style={[styles.chip, selectedParentId === '' && styles.chipActive]}
-                      onPress={() => onChange('')}
-                      disabled={submitting}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          selectedParentId === '' && styles.chipTextActive,
-                        ]}
-                      >
-                        Sin Categoría principal
-                      </Text>
-                    </TouchableOpacity>
-                    {parentOptions.map(cat => (
-                      <TouchableOpacity
-                        key={cat.id}
-                        style={[
-                          styles.chip,
-                          selectedParentId === cat.id && styles.chipActive,
-                        ]}
-                        onPress={() => onChange(cat.id)}
-                        disabled={submitting}
-                      >
-                        <Text
-                          style={[
-                            styles.chipText,
-                            selectedParentId === cat.id && styles.chipTextActive,
-                          ]}
-                        >
-                          {cat.name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  <SelectField
+                    options={[
+                      { value: '', label: 'Sin Categoría principal' },
+                      ...parentOptions.map(cat => ({ value: cat.id, label: cat.name })),
+                    ]}
+                    value={selectedParentId}
+                    onChange={onChange}
+                    placeholder="Sin Categoría principal"
+                    searchPlaceholder="Escribí para buscar una categoría..."
+                    disabled={submitting}
+                  />
                 )}
               />
             )}
@@ -464,28 +440,6 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.textSecondary,
     marginTop: spacing.xs,
-  },
-  chipsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  chip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    backgroundColor: colors.primaryLight,
-  },
-  chipActive: {
-    backgroundColor: colors.primary,
-  },
-  chipText: {
-    ...typography.label,
-    color: colors.primary,
-    fontWeight: '600',
-  },
-  chipTextActive: {
-    color: colors.textInverse,
   },
   requiredNote: {
     ...typography.caption,

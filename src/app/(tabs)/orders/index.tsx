@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
+import { SelectField } from '../../../components/ui/SelectField';
 import { clientsService } from '../../../services/api/clientsService';
 import { logisticsService, Truck } from '../../../services/api/logisticsService';
 import { productsService } from '../../../services/api/productsService';
@@ -608,11 +609,14 @@ export default function OrdersScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>1. Cliente</Text><Text style={styles.sectionHint}>Seleccioná quién recibe el pedido</Text></View></View>
             {loadingClients ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : clients.length ? (
-              <View style={styles.chips}>
-                {clients.map(item => <TouchableOpacity key={item.id} style={[styles.clientChip, selectedClient?.id === item.id && styles.clientChipActive]} onPress={() => void chooseClient(item)} disabled={submitting}>
-                  <Text numberOfLines={1} style={[styles.clientChipText, selectedClient?.id === item.id && styles.clientChipTextActive]}>{item.businessName}</Text>
-                </TouchableOpacity>)}
-              </View>
+              <SelectField
+                options={clients.map(item => ({ value: item.id, label: item.businessName, subtitle: item.taxId || undefined }))}
+                value={selectedClient?.id ?? null}
+                onChange={id => { const item = clients.find(client => client.id === id); if (item) void chooseClient(item); }}
+                placeholder="Elegí un cliente"
+                searchPlaceholder="Escribí el nombre del cliente..."
+                disabled={submitting}
+              />
             ) : <Text style={styles.emptyText}>No hay clientes disponibles.</Text>}
           </View>
 
@@ -857,11 +861,6 @@ const styles = StyleSheet.create({
   successBannerText: { ...typography.caption, color: colors.textPrimary, flex: 1, fontWeight: '600' },
   addProductsButton: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.full, backgroundColor: colors.primaryLight },
   addProductsText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  clientChip: { maxWidth: '100%', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.full, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-  clientChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  clientChipText: { ...typography.caption, color: colors.textPrimary, fontWeight: '600' },
-  clientChipTextActive: { color: colors.textInverse },
   loader: { paddingVertical: spacing.lg },
   addressOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
   addressOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },

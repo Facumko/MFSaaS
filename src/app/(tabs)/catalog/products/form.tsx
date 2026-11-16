@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FormErrorBanner } from "../../../../components/ui/FormErrorBanner";
+import { SelectField } from "../../../../components/ui/SelectField";
 import { useCategories } from "../../../../hooks";
 import { usePermissions } from "../../../../hooks/usePermissions";
 import {
@@ -164,6 +165,14 @@ export default function ProductFormScreen() {
     unitOptions.find((option) => option.value === unit)?.label ?? unit
   ).toLowerCase();
 
+  const categoryOptions = [
+    { value: "", label: "Sin categoría" },
+    ...categories.map((category) => ({
+      value: category.id,
+      label: category.name,
+    })),
+  ];
+
   const submit = async () => {
     setAttempted(true);
     const parsedPrice = Number(price.trim().replace(",", "."));
@@ -284,28 +293,13 @@ export default function ProductFormScreen() {
         )}
 
         <Text style={styles.label}>Se vende por</Text>
-        <View style={styles.chips}>
-          {unitOptions.map((option) => (
-            <TouchableOpacity
-              key={option.value}
-              style={[
-                styles.chip,
-                unit === option.value && styles.chipSelected,
-              ]}
-              onPress={() => setUnit(option.value)}
-              disabled={submitting}
-            >
-              <Text
-                style={[
-                  styles.chipText,
-                  unit === option.value && styles.chipTextSelected,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <SelectField
+          options={unitOptions}
+          value={unit}
+          onChange={setUnit}
+          placeholder="Elegí una unidad"
+          disabled={submitting}
+        />
 
         <Text style={styles.label}>Precio por {unitLabel} *</Text>
         <TextInput
@@ -387,39 +381,14 @@ export default function ProductFormScreen() {
         )}
 
         <Text style={styles.label}>Categoría</Text>
-        <View style={styles.chips}>
-          <TouchableOpacity
-            style={[styles.chip, !categoryId && styles.chipSelected]}
-            onPress={() => setCategoryId("")}
-            disabled={submitting}
-          >
-            <Text
-              style={[styles.chipText, !categoryId && styles.chipTextSelected]}
-            >
-              Sin categoría
-            </Text>
-          </TouchableOpacity>
-          {categories.map((category) => (
-            <TouchableOpacity
-              key={category.id}
-              style={[
-                styles.chip,
-                categoryId === category.id && styles.chipSelected,
-              ]}
-              onPress={() => setCategoryId(category.id)}
-              disabled={submitting}
-            >
-              <Text
-                style={[
-                  styles.chipText,
-                  categoryId === category.id && styles.chipTextSelected,
-                ]}
-              >
-                {category.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <SelectField
+          options={categoryOptions}
+          value={categoryId}
+          onChange={setCategoryId}
+          placeholder="Sin categoría"
+          searchPlaceholder="Escribí para buscar una categoría..."
+          disabled={submitting}
+        />
 
         {!!serverError && (
           <FormErrorBanner message={serverError} onRetry={submit} />
@@ -508,21 +477,6 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { opacity: 0.5 },
   multiline: { minHeight: 88, textAlignVertical: "top" },
-  chips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
-  chip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    backgroundColor: colors.primaryLight,
-  },
-  chipSelected: { backgroundColor: colors.primary },
-  chipText: { ...typography.caption, color: colors.primary, fontWeight: "600" },
-  chipTextSelected: { color: colors.textInverse },
   note: {
     ...typography.caption,
     color: colors.textSecondary,
