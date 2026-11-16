@@ -46,7 +46,16 @@ export const ledgerService = {
   async getCustomerLedger(customerId: string): Promise<CustomerLedger> {
     const response = await client.get<unknown>(`/customers/${customerId}/ledger`);
     const { root, entries } = unwrap(response.data);
-    const balanceValue = root.balance ?? root.currentBalance ?? root.totalBalance ?? root.debt;
+    const entriesWithBalance = entries
+      .filter(item => item.runningBalance != null && Number.isFinite(Number(item.runningBalance)))
+      .sort((a, b) => String(b.createdAt ?? b.date ?? '').localeCompare(String(a.createdAt ?? a.date ?? '')));
+    const balanceValue = root.balance
+      ?? root.currentBalance
+      ?? root.totalBalance
+      ?? root.debt
+      ?? entriesWithBalance[0]?.runningBalance
+      // The ledger endpoint returns a list of movements; an empty list means no debt.
+      ?? (entries.length === 0 ? 0 : null);
     return {
       balance: balanceValue == null ? null : Number(balanceValue),
       entries: entries.map(toEntry),

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { IUser } from '../types';
 
+const cleanToken = (token: string) => token.trim().replace(/^Bearer\s+/i, '');
+
 interface AuthState {
   user: IUser | null;
   accessToken: string | null;
@@ -8,6 +10,7 @@ interface AuthState {
   isAuthenticated: boolean;
 
   setAuth: (user: IUser, accessToken: string, tokenType?: string | null) => void;
+  setAccessToken: (accessToken: string, tokenType?: string | null) => void;
   clearAuth: () => void;
   hasPermission: (permission: string) => boolean;
   updateUser: (changes: Partial<IUser>) => void;
@@ -20,7 +23,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isAuthenticated: false,
 
   setAuth: (user, accessToken, tokenType = 'Bearer') =>
-    set({ user, accessToken, tokenType: tokenType || 'Bearer', isAuthenticated: true }),
+    set({ user, accessToken: cleanToken(accessToken), tokenType: tokenType?.trim() || 'Bearer', isAuthenticated: true }),
+
+  setAccessToken: (accessToken, tokenType = 'Bearer') =>
+    set({ accessToken: cleanToken(accessToken), tokenType: tokenType?.trim() || 'Bearer' }),
 
   clearAuth: () =>
     set({ user: null, accessToken: null, tokenType: null, isAuthenticated: false }),

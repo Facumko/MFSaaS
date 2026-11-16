@@ -8,6 +8,7 @@ import { LoadingScreen } from '../components/layout';
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore();
   const setAuth = useAuthStore(state => state.setAuth);
+  const setAccessToken = useAuthStore(state => state.setAccessToken);
   const clearAuth = useAuthStore(state => state.clearAuth);
   const segments = useSegments();
   const router = useRouter();
@@ -23,31 +24,23 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     loadRememberedSession()
       .then(async session => {
         if (!active || !session) return;
-        setAuth({
-          id: session.username,
-          username: session.username,
-          fullName: session.username,
-          role: 'unknown',
-          permissions: [],
-          tenantId: '',
-        }, session.token, session.tokenType);
+        // El token permite consultar /auth/me, pero no autenticamos la UI
+        // hasta cargar el rol y evitar redirecciones prematuras por role=unknown.
+        setAccessToken(session.token, session.tokenType);
         try {
           const profile = await authService.getCurrentUser(session.username);
           if (active) setAuth(profile, session.token, session.tokenType);
         } catch (profileError: any) {
           if (!active) return;
-          if (profileError?.response?.status === 401) {
-            clearAuth();
-            await removeRememberedSession();
-          } else {
-            console.warn('No se pudo actualizar el perfil de la sesión', profileError);
-          }
+          clearAuth();
+          await removeRememberedSession();
+          console.warn('No se pudo cargar el perfil de la sesión', profileError);
         }
       })
       .catch(storageError => console.warn('No se pudo restaurar la sesión', storageError))
       .finally(() => { if (active) setSessionReady(true); });
     return () => { active = false; };
-  }, [setAuth, clearAuth]);
+  }, [setAuth, setAccessToken, clearAuth]);
 
   useEffect(() => {
     if (!mounted || !sessionReady) return;

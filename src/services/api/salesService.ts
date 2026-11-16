@@ -1,6 +1,13 @@
 import { client } from './client';
 
 export type ApiOrderStatus = 'PENDING' | 'IN_ROUTE' | 'DELIVERED' | 'CANCELLED';
+export type DeliveryPaymentMethod = 'CASH' | 'TRANSFER' | 'MIXED' | 'CURRENT_ACCOUNT';
+
+export interface OrderDeliveryRequest {
+  paymentMethod: DeliveryPaymentMethod;
+  cashAmount?: number;
+  transferAmount?: number;
+}
 
 export interface CreateOrderRequest {
   customerId: number;
@@ -95,7 +102,8 @@ export const salesService = {
   },
 
   async getOrdersByTruck(truckId: number): Promise<OrderListItem[]> {
-    const orders = await this.getOrders({ truckId });
+    const response = await client.get<unknown>(`/trucks/${truckId}/orders`);
+    const orders = unwrapList(response.data).map(toOrderListItem);
     return Promise.all(orders.map(async order => {
       if (order.items?.length || !order.id) return order;
       try { return toOrderListItem(await this.getOrder(order.id)); }
@@ -147,8 +155,8 @@ export const salesService = {
     await client.patch(`/orders/${id}/in-route`);
   },
 
-  async markDelivered(id: string): Promise<void> {
-    await client.patch(`/orders/${id}/delivered`);
+  async markDelivered(id: string, payload: OrderDeliveryRequest): Promise<void> {
+    await client.patch(`/orders/${id}/delivered`, payload);
   },
 
   async cancelOrder(id: string): Promise<void> {

@@ -24,7 +24,7 @@ export default function CatalogScreen() {
   const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
   useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
-  // Categorías: conectadas al backend real (endpoint /category/get).
+  // Categorías: conectadas al backend real (endpoint /categories).
   // Se muestra el error real (en vez de confundirlo con "no hay categorías")
   // para poder reintentar sin perder el resto del filtro.
   const {
@@ -114,13 +114,13 @@ export default function CatalogScreen() {
       <View style={styles.catalogHeader}>
         <Text style={styles.catalogHeaderTitle}>Catálogo</Text>
         <View style={styles.headerActions}>
-          <TouchableOpacity
+          {canManageProducts && <TouchableOpacity
             style={styles.manageProductsButton}
             onPress={() => router.push("/(tabs)/catalog/products" as any)}
           >
             <Ionicons name="cube-outline" size={17} color={colors.primary} />
             <Text style={styles.manageCategoriesText}>Productos</Text>
-          </TouchableOpacity>
+          </TouchableOpacity>}
           {canManageCategories && <TouchableOpacity
             style={styles.manageCategoriesButton}
             onPress={() => router.push("/(tabs)/catalog/categories" as any)}

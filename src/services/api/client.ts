@@ -26,7 +26,7 @@ client.interceptors.request.use(config => {
 
   const { accessToken, tokenType } = useAuthStore.getState();
   if (accessToken) {
-    config.headers.Authorization = `${tokenType || 'Bearer'} ${accessToken}`;
+    config.headers.set('Authorization', `${(tokenType || 'Bearer').trim()} ${accessToken.trim().replace(/^Bearer\s+/i, '')}`);
   }
   return config;
 });

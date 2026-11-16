@@ -51,8 +51,6 @@ export default function DebtorsScreen() {
     });
   };
 
-  const totalDebt = debtors.reduce((sum, debtor) => sum + debtor.totalDebt, 0);
-
   const renderDebtorItem = ({ item }: { item: IDebtor }) => (
     <TouchableOpacity
       style={styles.debtorCard}
@@ -121,19 +119,6 @@ export default function DebtorsScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      {/* Summary Card */}
-      {debtors.length > 0 && (
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Deuda total del negocio</Text>
-          <Text style={styles.summaryAmount}>
-            ${totalDebt.toLocaleString('es-AR')}
-          </Text>
-          <Text style={styles.summaryCount}>
-            {debtors.length} cliente{debtors.length !== 1 ? 's' : ''} con deuda
-          </Text>
-        </View>
-      )}
-
       {/* Debtors List */}
       {debtors.length > 0 ? (
         <FlashList
@@ -173,31 +158,6 @@ const styles = StyleSheet.create({
   headerTitle: {
     ...typography.heading,
     color: colors.textPrimary,
-  },
-  summaryCard: {
-    backgroundColor: colors.errorLight,
-    marginHorizontal: spacing.lg,
-    marginVertical: spacing.lg,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.md,
-    borderLeftWidth: 4,
-    borderLeftColor: colors.error,
-  },
-  summaryLabel: {
-    ...typography.caption,
-    color: colors.textSecondary,
-    marginBottom: spacing.xs,
-  },
-  summaryAmount: {
-    ...typography.price,
-    color: colors.error,
-    marginBottom: spacing.xs,
-  },
-  summaryCount: {
-    ...typography.label,
-    color: colors.error,
-    fontWeight: '600',
   },
   listContent: {
     paddingHorizontal: spacing.lg,

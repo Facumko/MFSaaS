@@ -20,9 +20,8 @@ import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
 
-type DeleteTarget = { kind: 'truck'; id: string; label: string } | null;
-
 const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'Cancelado' };
+const isDeliveryRole = (roleName: string) => /delivery|driver|chofer|repartidor/i.test(roleName);
 
 export default function LogisticsScreen() {
   const router = useRouter();
@@ -43,7 +42,6 @@ export default function LogisticsScreen() {
   const [editingTruck, setEditingTruck] = useState<Truck | null>(null);
   const [plate, setPlate] = useState('');
   const [driverId, setDriverId] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
 
   useEffect(() => { if (!canViewLogistics) router.replace('/(tabs)/catalog' as any); }, [canViewLogistics, router]);
 
@@ -65,7 +63,7 @@ export default function LogisticsScreen() {
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmployees(true);
-    try { setEmployees((await usersService.getUsers()).filter(user => user.active)); }
+    try { setEmployees((await usersService.getUsers()).filter(user => user.active && isDeliveryRole(user.roleName))); }
     catch { setEmployees([]); }
     finally { setLoadingEmployees(false); }
   }, []);
@@ -110,6 +108,16 @@ export default function LogisticsScreen() {
     if (normalizedDriverId && (!/^\d+$/.test(normalizedDriverId) || Number(normalizedDriverId) < 1)) {
       setError('El ID del chofer debe ser un número entero positivo.'); return;
     }
+    if (normalizedDriverId && normalizedDriverId !== editingTruck?.driverId) {
+      const eligibleDriver = employees.find(employee => employee.id === normalizedDriverId);
+      if (!eligibleDriver || !isDeliveryRole(eligibleDriver.roleName)) {
+        setError('Solo se puede asignar al camión un usuario activo con rol de repartidor.'); return;
+      }
+      const assignedTruck = trucks.find(truck => truck.active && truck.id !== editingTruck?.id && truck.driverId === normalizedDriverId);
+      if (assignedTruck) {
+        setError(`${eligibleDriver.fullName || eligibleDriver.email} ya está asignado al camión ${assignedTruck.licensePlate}. Cada repartidor puede tener un solo camión activo.`); return;
+      }
+    }
     setSaving(true);
     setError(null);
     try {
@@ -132,23 +140,6 @@ export default function LogisticsScreen() {
       await loadTrucks();
     } catch (err) {
       setError(parseApiError(err, 'No se pudo cambiar el estado del camión.').message);
-    } finally { setSaving(false); }
-  };
-
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    setSaving(true);
-    setError(null);
-    try {
-      if (deleteTarget.kind === 'truck') {
-        await logisticsService.deleteTruck(deleteTarget.id);
-        if (selectedTruck?.id === deleteTarget.id) { setSelectedTruck(null); setTruckOrders([]); }
-        await loadTrucks();
-      }
-      setDeleteTarget(null);
-    } catch (err) {
-      setDeleteTarget(null);
-      setError(parseApiError(err, 'No se pudo eliminar el registro.').message);
     } finally { setSaving(false); }
   };
 
@@ -177,7 +168,6 @@ export default function LogisticsScreen() {
           {canManageLogistics && <View style={styles.truckActions}>
             <TouchableOpacity style={styles.truckAction} onPress={() => openTruckForm(truck)}><Ionicons name="create-outline" size={16} color={colors.textSecondary} /><Text style={styles.truckActionText}>Editar</Text></TouchableOpacity>
             <TouchableOpacity style={styles.truckAction} onPress={() => void toggleTruck(truck)} disabled={saving}><Ionicons name={truck.active ? 'pause-circle-outline' : 'play-circle-outline'} size={16} color={colors.textSecondary} /><Text style={styles.truckActionText}>{truck.active ? 'Desactivar' : 'Activar'}</Text></TouchableOpacity>
-            <TouchableOpacity style={styles.truckAction} onPress={() => setDeleteTarget({ kind: 'truck', id: truck.id, label: truck.licensePlate })}><Ionicons name="trash-outline" size={16} color={colors.error} /><Text style={[styles.truckActionText, { color: colors.error }]}>Eliminar</Text></TouchableOpacity>
           </View>}
         </View>
       )) : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? 'Pedile a un administrador que asigne tu usuario a un camión.' : 'Agregá un camión para asignar pedidos y choferes.'}</Text></View>}
@@ -205,18 +195,12 @@ export default function LogisticsScreen() {
           <Text style={styles.inputLabel}>Chofer o empleado <Text style={styles.optional}>(opcional)</Text></Text>
           {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : employees.length ? <ScrollView style={styles.employeePicker} nestedScrollEnabled>
             <TouchableOpacity style={[styles.employeeChoice, !driverId && styles.employeeChoiceSelected]} onPress={() => setDriverId('')} disabled={saving}><Text style={[styles.employeeChoiceText, !driverId && styles.employeeChoiceTextSelected]}>Sin asignar</Text></TouchableOpacity>
-            {employees.map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, driverId === employee.id && styles.employeeChoiceSelected]} onPress={() => setDriverId(employee.id)} disabled={saving}><Text style={[styles.employeeChoiceText, driverId === employee.id && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : employee.roleId ? ` · Rol ${employee.roleId}` : ''}</Text></TouchableOpacity>)}
+            {employees.filter(employee => !trucks.some(truck => truck.active && truck.id !== editingTruck?.id && truck.driverId === employee.id)).map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, driverId === employee.id && styles.employeeChoiceSelected]} onPress={() => setDriverId(employee.id)} disabled={saving}><Text style={[styles.employeeChoiceText, driverId === employee.id && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : employee.roleId ? ` · Rol ${employee.roleId}` : ''}</Text></TouchableOpacity>)}
           </ScrollView> : <View><Text style={styles.modalDescription}>No hay empleados disponibles para asignar.</Text><TouchableOpacity onPress={() => void loadEmployees()}><Text style={styles.refreshText}>Reintentar carga de usuarios</Text></TouchableOpacity></View>}
           <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setTruckModal(false)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void saveTruck()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Guardar</Text>}</TouchableOpacity></View>
         </View></View>
       </Modal>
 
-      <Modal visible={!!deleteTarget} transparent animationType="fade" onRequestClose={() => setDeleteTarget(null)}>
-        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
-          <View style={styles.deleteIcon}><Ionicons name="trash-outline" size={24} color={colors.error} /></View><Text style={styles.modalTitle}>Eliminar camión</Text><Text style={styles.modalDescription}>¿Querés eliminar {deleteTarget?.label}? Esta acción no se puede deshacer.</Text>
-          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setDeleteTarget(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.deleteButton} onPress={() => void confirmDelete()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Eliminar</Text>}</TouchableOpacity></View>
-        </View></View>
-      </Modal>
     </ScrollView>
   );
 }

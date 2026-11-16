@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { clientsService } from '../services/api/clientsService';
+import { ledgerService } from '../services/api/ledgerService';
 import { IClient } from '../types';
 
 interface UseClientsReturn {
@@ -33,7 +34,19 @@ export const useClients = (enabled = true): UseClientsReturn => {
       setLoading(true);
       setError(null);
       const result = await clientsService.getClients(search, page);
-      setClients(result.items);
+      const clientsWithBalances = await Promise.all(result.items.map(async client => {
+        try {
+          const ledger = await ledgerService.getCustomerLedger(client.id);
+          return {
+            ...client,
+            totalDebt: ledger.balance ?? 0,
+            debtBalanceAvailable: ledger.balance != null && Number.isFinite(ledger.balance),
+          };
+        } catch {
+          return { ...client, debtBalanceAvailable: false };
+        }
+      }));
+      setClients(clientsWithBalances);
       setTotal(result.total);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Error desconocido'));

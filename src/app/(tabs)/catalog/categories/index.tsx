@@ -74,36 +74,10 @@ export default function CategoriesListScreen() {
     );
   };
 
-  const handleDelete = (category: ICategory) => {
-    Alert.alert(
-      'Eliminar categoría',
-      `Esta acción no se puede deshacer. ¿Eliminar "${category.name}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setBusyId(category.id);
-              await catalogService.deleteCategory(category.id);
-              await refetch();
-            } catch (err) {
-              Alert.alert('Error', 'No se pudo eliminar la categoría');
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const handleLongPress = (category: ICategory) => {
     Alert.alert(category.name, 'Elegí una acción', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Editar', onPress: () => handleEdit(category) },
-      ...(canManageCategoryStatus ? [{ text: 'Eliminar', style: 'destructive' as const, onPress: () => handleDelete(category) }] : []),
     ]);
   };
 
@@ -114,7 +88,7 @@ export default function CategoriesListScreen() {
         category={item}
         parentName={parentNameOf(item)}
         onPress={() => !isBusy && handleEdit(item)}
-        onLongPress={() => canManageCategoryStatus && !isBusy && handleLongPress(item)}
+        onLongPress={() => !isBusy && handleLongPress(item)}
         onToggleActive={canManageCategoryStatus ? () => handleToggleActive(item) : undefined}
         togglingActive={isBusy}
       />
