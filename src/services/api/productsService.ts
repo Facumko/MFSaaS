@@ -24,7 +24,7 @@ export interface ProductWriteRequest {
   description?: string;
   sku?: string;
   unitPrice: number;
-  unit?: string;
+  unit: string;
   categoryId?: number | null;
 }
 
@@ -75,14 +75,22 @@ function toIProduct(dto: ProductDto, categories: ICategory[] = []): IProduct {
 }
 
 export const productsService = {
-  /** GET /product/get; filtra el estado localmente porque el backend no tiene Product.active. */
+  /** GET /products supports active and categoryId; multi-category filters stay local. */
   async getProducts(
     search = "",
     categoryIds: string[] = [],
     categories: ICategory[] = [],
     active?: boolean,
   ): Promise<{ items: IProduct[]; total: number }> {
-    const response = await client.get<unknown>("/product/get");
+    const categoryId = categoryIds.length === 1 && /^\d+$/.test(categoryIds[0])
+      ? Number(categoryIds[0])
+      : undefined;
+    const response = await client.get<unknown>("/products", {
+      params: {
+        ...(active == null ? {} : { active }),
+        ...(categoryId == null ? {} : { categoryId }),
+      },
+    });
     let products = unwrapList(response.data);
     if (active === true)
       products = products.filter((product) => product.active !== false);
@@ -106,32 +114,32 @@ export const productsService = {
     return { items, total: items.length };
   },
 
-  /** GET /product/get/{id} */
+  /** GET /products/{id} */
   async getProductById(
     id: string,
     categories: ICategory[] = [],
   ): Promise<IProduct> {
-    const response = await client.get<ProductDto>("/product/get/" + id);
+    const response = await client.get<ProductDto>("/products/" + id);
     return toIProduct(response.data, categories);
   },
 
   async createProduct(data: ProductWriteRequest): Promise<void> {
-    await client.post("/product/save", data);
+    await client.post("/products", data);
   },
 
   async updateProduct(id: string, data: ProductWriteRequest): Promise<void> {
-    await client.put("/product/update/" + id, data);
+    await client.put("/products/" + id, data);
   },
 
   async deleteProduct(id: string): Promise<void> {
-    await client.delete("/product/delete/" + id);
+    await client.delete("/products/" + id);
   },
 
   async deactivateProduct(id: string): Promise<void> {
-    await client.patch("/product/desactivate/" + id);
+    await client.delete("/products/" + id);
   },
 
   async activateProduct(id: string): Promise<void> {
-    await client.patch("/product/activate/" + id);
+    await client.patch("/products/" + id + "/activate");
   },
 };

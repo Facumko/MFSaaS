@@ -30,11 +30,11 @@ const normalize = (text: string) =>
 export default function ProductManagementScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { canManageProducts, canViewCatalog } = usePermissions();
+  const { canManageProducts } = usePermissions();
   useEffect(() => {
-    if (!canViewCatalog) router.replace("/(tabs)/orders" as any);
-  }, [canViewCatalog, router]);
-  const { categories } = useCategories(canViewCatalog);
+    if (!canManageProducts) router.replace("/(tabs)/catalog" as any);
+  }, [canManageProducts, router]);
+  const { categories } = useCategories(canManageProducts);
   const [products, setProducts] = useState<IProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,35 +115,6 @@ export default function ProductManagementScreen() {
     );
   };
 
-  const deleteProduct = (product: IProduct) => {
-    Alert.alert(
-      "Eliminar producto",
-      '¿Eliminar "' + product.name + '"? Esta acción no se puede deshacer.',
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Eliminar",
-          style: "destructive",
-          onPress: async () => {
-            setBusyId(product.id);
-            try {
-              await productsService.deleteProduct(product.id);
-              await loadProducts();
-            } catch (err: any) {
-              Alert.alert(
-                "Error",
-                err?.response?.data?.message ||
-                  "No se pudo eliminar el producto.",
-              );
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ],
-    );
-  };
-
   const renderItem = ({ item }: { item: IProduct }) => (
     <View style={styles.card}>
       <TouchableOpacity
@@ -175,12 +146,6 @@ export default function ProductManagementScreen() {
                 size={22}
                 color={item.active ? colors.success : colors.textSecondary}
               />
-            </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityLabel="Eliminar"
-              onPress={() => deleteProduct(item)}
-            >
-              <Ionicons name="trash-outline" size={21} color={colors.error} />
             </TouchableOpacity>
           </>
         )}

@@ -70,6 +70,7 @@ export interface IClient {
   active: boolean;
   addresses: IAddress[];
   totalDebt: number;
+  debtBalanceAvailable?: boolean;
 }
 
 export interface IClientSummary {

@@ -4,10 +4,13 @@ import { PERMISSIONS } from '../utils/constants';
 export function usePermissions() {
   const { hasPermission, user } = useAuthStore();
   const role = user?.role ?? 'unknown';
-  const isOwner = role === 'owner';
-  const isManager = role === 'manager';
-  const isSeller = role === 'seller';
-  const isDelivery = role === 'delivery';
+  // El perfil puede conservar el nombre original del backend (p. ej. ADMIN)
+  // aunque `role` haya quedado como unknown en una sesión ya iniciada.
+  const roleName = `${user?.roleName ?? ''} ${role}`.trim().toLowerCase();
+  const isOwner = role === 'owner' || /owner|admin|propiet/.test(roleName);
+  const isManager = role === 'manager' || /manager|gerent|encarg/.test(roleName);
+  const isSeller = role === 'seller' || /seller|sales|vendedor|venta/.test(roleName);
+  const isDelivery = role === 'delivery' || /delivery|driver|chofer|repart/.test(roleName);
   const isAdmin = isOwner || isManager;
   // When the backend supplies explicit roles, use a consistent UI policy even
   // if its permissions array is empty or incomplete. Keep permission-based
@@ -30,7 +33,7 @@ export function usePermissions() {
     canManageLogistics: allowed(PERMISSIONS.MANAGE_LOGISTICS, []),
     canAssignOrdersToTruck: allowed(PERMISSIONS.VIEW_ORDERS, ['seller']),
     canViewReports:     allowed(PERMISSIONS.VIEW_REPORTS, []),
-    canManageUsers:     isOwner || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_USERS)),
+    canManageUsers:     isOwner || isManager || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_USERS)),
     role,
     isOwner,
     isManager,

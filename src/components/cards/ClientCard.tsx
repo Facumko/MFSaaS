@@ -13,6 +13,7 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onPress, showDeb
   const isClient = (c: any): c is IClient => 'phone' in c && 'email' in c;
   const clientData = isClient(client) ? client : (client as IClient);
   const hasDebt = isClient(clientData) && clientData.totalDebt > 0;
+  const debtUnavailable = isClient(clientData) && clientData.debtBalanceAvailable === false;
 
   return (
     <TouchableOpacity style={styles.container} onPress={onPress} activeOpacity={0.7}>
@@ -22,14 +23,19 @@ export const ClientCard: React.FC<ClientCardProps> = ({ client, onPress, showDeb
           <Text style={styles.businessName} numberOfLines={1}>
             {client.businessName}
           </Text>
-          {showDebtBadge && hasDebt && (
+          {showDebtBadge && debtUnavailable && (
+            <View style={[styles.debtBadge, styles.debtBadgeUnavailable]}>
+              <Text style={[styles.debtText, styles.debtTextUnavailable]}>Saldo no disponible</Text>
+            </View>
+          )}
+          {showDebtBadge && !debtUnavailable && hasDebt && (
             <View style={styles.debtBadge}>
               <Text style={styles.debtText}>
                 ${(clientData.totalDebt || 0).toLocaleString('es-AR')}
               </Text>
             </View>
           )}
-          {showDebtBadge && !hasDebt && (
+          {showDebtBadge && !debtUnavailable && !hasDebt && (
             <View style={[styles.debtBadge, styles.debtBadgeZero]}>
               <Text style={[styles.debtText, styles.debtTextZero]}>Sin deuda</Text>
             </View>
@@ -93,6 +99,9 @@ const styles = StyleSheet.create({
   debtBadgeZero: {
     backgroundColor: colors.successLight,
   },
+  debtBadgeUnavailable: {
+    backgroundColor: colors.border,
+  },
   debtText: {
     ...typography.label,
     color: colors.error,
@@ -100,6 +109,9 @@ const styles = StyleSheet.create({
   },
   debtTextZero: {
     color: colors.success,
+  },
+  debtTextUnavailable: {
+    color: colors.textSecondary,
   },
   footer: {
     gap: spacing.xs,

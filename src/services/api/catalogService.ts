@@ -1,18 +1,9 @@
 /**
  * catalogService.ts
  * Conectado al backend real (category-controller).
- * Endpoints disponibles: /category/get, /category/get/{id}, /category/save,
- * /category/update/{id}, /category/delete/{id}, /category/desactivate/{id},
- * /category/activate/{id}
+ * Endpoints disponibles: /categories, /categories/{id}, /categories/{id}/activate.
  *
- * NOTA: el swagger define "id" como query param en get/{id} y update/{id}
- * a pesar de que la ruta lo trae en el path (/category/get/{id}, /category/update/{id}).
- * Se asume que es un bug del swagger generado y se usa la ruta con el id en el path,
- * igual que el resto de los endpoints. Si el backend responde 400/404, probar
- * pasándolo como ?id= en su lugar.
- *
- * TODO: products (IProduct) sigue sin endpoints en el backend. Completar
- * getProducts acá cuando exista product-controller.
+ * La OpenAPI actual documenta los IDs como parámetros de path.
  */
 import { ICategory } from '../../types';
 import { client } from './client';
@@ -47,76 +38,42 @@ function toCategoryRequest(data: Partial<ICategory>): Partial<CategoryDto> {
 }
 
 export const catalogService = {
-  /** GET /category/get */
+  /** GET /categories */
   async getCategories(): Promise<ICategory[]> {
-    const response = await client.get<CategoryDto[]>('/category/get');
+    const response = await client.get<CategoryDto[]>('/categories');
     return response.data.map(toICategory);
   },
 
-  /**
-   * GET /category/get/{id}
-   * El swagger declara "id" como query param a pesar de traerlo en el path.
-   * Se prueba primero la ruta con el id en el path (estándar REST); si el
-   * backend responde 400/404, se reintenta con ?id= antes de fallar. Esto
-   * es lo que causaba que la edición de una categoría funcionara "a veces sí,
-   * a veces no": no era un problema de navegación, era este fetch fallando
-   * silenciosamente y la pantalla volviendo atrás por error.
-   */
+  /** GET /categories/{id} */
   async getCategoryById(id: string): Promise<ICategory> {
-    try {
-      const response = await client.get<CategoryDto>(`/category/get/${id}`);
-      return toICategory(response.data);
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 400 || status === 404) {
-        const response = await client.get<CategoryDto>('/category/get', { params: { id } });
-        return toICategory(response.data);
-      }
-      throw err;
-    }
-  },
-
-  /** POST /category/save */
-  async createCategory(dto: Partial<ICategory>): Promise<ICategory> {
-    const response = await client.post<CategoryDto>('/category/save', toCategoryRequest(dto));
+    const response = await client.get<CategoryDto>(`/categories/${id}`);
     return toICategory(response.data);
   },
 
-  /**
-   * PUT /category/update/{id}
-   * Mismo fallback que getCategoryById: si el path falla con 400/404,
-   * reintenta pasando el id como query param.
-   */
+  /** POST /categories */
+  async createCategory(dto: Partial<ICategory>): Promise<ICategory> {
+    const response = await client.post<CategoryDto>('/categories', toCategoryRequest(dto));
+    return toICategory(response.data);
+  },
+
+  /** PUT /categories/{id} */
   async updateCategory(id: string, dto: Partial<ICategory>): Promise<ICategory> {
-    try {
-      const response = await client.put<CategoryDto>(`/category/update/${id}`, toCategoryRequest(dto));
-      return toICategory(response.data);
-    } catch (err: any) {
-      const status = err?.response?.status;
-      if (status === 400 || status === 404) {
-        const response = await client.put<CategoryDto>(
-          '/category/update',
-          toCategoryRequest(dto),
-          { params: { id } },
-        );
-        return toICategory(response.data);
-      }
-      throw err;
-    }
+    const response = await client.put<CategoryDto>(`/categories/${id}`, toCategoryRequest(dto));
+    return toICategory(response.data);
   },
 
-  /** DELETE /category/delete/{id} — baja definitiva */
+  /** DELETE /categories/{id} — baja lógica según el backend. */
   async deleteCategory(id: string): Promise<void> {
-    await client.delete(`/category/delete/${id}`);
+    await client.delete(`/categories/${id}`);
   },
 
-  /** PATCH /category/desactivate/{id} — baja lógica (soft delete) */
+  /** DELETE /categories/{id} — baja lógica según el backend. */
   async deactivateCategory(id: string): Promise<void> {
-    await client.patch(`/category/desactivate/${id}`);
+    await client.delete(`/categories/${id}`);
   },
 
-  /** PATCH /category/activate/{id} — reactiva una categoría dada de baja lógica */
+  /** PATCH /categories/{id}/activate — reactiva una categoría dada de baja lógica. */
   async activateCategory(id: string): Promise<void> {
-    await client.patch(`/category/activate/${id}`);
+    await client.patch(`/categories/${id}/activate`);
   },
 };

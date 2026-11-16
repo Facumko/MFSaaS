@@ -43,7 +43,7 @@ export default function ProductFormScreen() {
     ? params.productId[0]
     : params.productId;
   const editing = !!productId;
-  const { categories } = useCategories();
+  const { categories } = useCategories(canManageProducts);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [sku, setSku] = useState("");
