@@ -25,7 +25,7 @@ export default function ClientsListScreen() {
   const insets = useSafeAreaInsets();
   const { clients, loading, error, refetch, search, setSearch } = useClients();
   const [filteredSearch, setFilteredSearch] = useState('');
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Debounced search
   const handleSearchChange = (text: string) => {
@@ -133,6 +133,7 @@ export default function ClientsListScreen() {
           placeholderTextColor={colors.textSecondary}
           value={filteredSearch}
           onChangeText={handleSearchChange}
+          maxLength={25}
           editable={!loading}
         />
         {filteredSearch.length > 0 && (
@@ -153,7 +154,6 @@ export default function ClientsListScreen() {
           data={clients}
           renderItem={renderClient}
           keyExtractor={(item) => item.id}
-          estimatedItemSize={100}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl

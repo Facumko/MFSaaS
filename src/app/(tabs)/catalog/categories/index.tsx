@@ -140,6 +140,16 @@ export default function CategoriesListScreen() {
       );
     }
 
+    if (search.trim()) {
+      return (
+        <View style={styles.emptyContainer}>
+          <Ionicons name="search-outline" size={42} color={colors.textSecondary} />
+          <Text style={styles.emptyTitle}>No se encontraron categorías</Text>
+          <Text style={styles.emptyMessage}>Probá con otro nombre o empezá por la primera letra.</Text>
+        </View>
+      );
+    }
+
     return (
       <View style={styles.emptyContainer}>
         <Ionicons name="folder-open" size={48} color={colors.textSecondary} />
@@ -169,6 +179,7 @@ export default function CategoriesListScreen() {
           placeholderTextColor={colors.textSecondary}
           value={search}
           onChangeText={setSearch}
+          maxLength={25}
           editable={!loading}
         />
         {search.length > 0 && (

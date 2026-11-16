@@ -43,8 +43,8 @@ export default function ProductManagementScreen() {
     const filtered = query
       ? products.filter(
           (product) =>
-            normalize(product.name).includes(query) ||
-            normalize(product.category.name).includes(query),
+            normalize(product.name).startsWith(query) ||
+            normalize(product.category.name).startsWith(query),
         )
       : products;
     const sorted = [...filtered].sort((a, b) =>
@@ -206,6 +206,7 @@ export default function ProductManagementScreen() {
             style={styles.searchInput}
             value={search}
             onChangeText={setSearch}
+            maxLength={25}
             placeholder="Buscar por nombre o categoría"
             placeholderTextColor={colors.textSecondary}
             autoCorrect={false}

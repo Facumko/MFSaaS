@@ -1,5 +1,6 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import {
     ActivityIndicator,
     StyleSheet,
@@ -11,6 +12,7 @@ import { productsService } from "../../../services/api/productsService";
 import { useCategories } from "../../../hooks";
 import { useCartStore } from "../../../store/cartStore";
 import { IProduct } from "../../../types";
+import { colors, spacing, typography } from "../../../theme";
 
 export default function ProductDetailScreen() {
   const { productId } = useLocalSearchParams<{ productId: string }>();
@@ -68,6 +70,10 @@ export default function ProductDetailScreen() {
 
   return (
     <View style={styles.container}>
+      <TouchableOpacity style={styles.backButton} onPress={() => router.back()} accessibilityLabel="Volver">
+        <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+        <Text style={styles.backText}>Volver</Text>
+      </TouchableOpacity>
       <View style={styles.card}>
         <Text style={styles.name}>{product.name}</Text>
         <Text style={styles.category}>{product.category.name}</Text>
@@ -113,6 +119,8 @@ const styles = StyleSheet.create({
     padding: 16,
     justifyContent: "center",
   },
+  backButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginBottom: spacing.md },
+  backText: { ...typography.label, color: colors.textPrimary },
   centerContainer: {
     flex: 1,
     justifyContent: "center",

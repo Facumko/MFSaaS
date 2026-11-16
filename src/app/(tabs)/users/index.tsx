@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
@@ -10,6 +11,7 @@ type Draft = { fullName: string; email: string; roleId: string; password: string
 const emptyDraft: Draft = { fullName: '', email: '', roleId: '', password: '' };
 
 export default function UsersScreen() {
+  const router = useRouter();
   const [users, setUsers] = useState<ManagedUser[]>([]);
   const [roles, setRoles] = useState<ManagedRole[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,7 +91,7 @@ export default function UsersScreen() {
   const updateDraft = (key: keyof Draft, value: string) => { setDraft(current => ({ ...current, [key]: value })); setFieldErrors(current => ({ ...current, [key]: undefined })); setError(null); };
 
   return <View style={styles.screen}>
-    <View style={styles.header}><View><Text style={styles.eyebrow}>ADMINISTRACIÓN</Text><Text style={styles.title}>Usuarios</Text></View><TouchableOpacity style={styles.addButton} onPress={() => openForm()}><Ionicons name="person-add-outline" size={18} color={colors.textInverse} /><Text style={styles.addText}>Nuevo</Text></TouchableOpacity></View>
+    <View style={styles.header}><TouchableOpacity onPress={() => router.back()} accessibilityLabel="Volver"><Ionicons name="chevron-back" size={24} color={colors.textPrimary} /></TouchableOpacity><View><Text style={styles.eyebrow}>ADMINISTRACIÓN</Text><Text style={styles.title}>Usuarios</Text></View><TouchableOpacity style={styles.addButton} onPress={() => openForm()}><Ionicons name="person-add-outline" size={18} color={colors.textInverse} /><Text style={styles.addText}>Nuevo</Text></TouchableOpacity></View>
     {!!error && <View style={styles.banner}><FormErrorBanner message={error} onRetry={load} /></View>}
     {loading ? <View style={styles.center}><ActivityIndicator size="large" color={colors.primary} /></View> : <ScrollView contentContainerStyle={styles.list}>
       {users.map(user => <View key={user.id} style={styles.card}>

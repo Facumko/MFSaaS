@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,6 +25,7 @@ import { parseApiError } from '../../../utils/apiErrors';
 type ScreenMode = 'new' | 'history';
 
 const money = (value: number) => `$${value.toLocaleString('es-AR')}`;
+const normalizeSearch = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
 const localToday = () => {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -44,6 +45,8 @@ export default function OrdersScreen() {
   const { items, total, updateQty, clearCart } = useCartStore();
   const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
   const [clients, setClients] = useState<IClientSummary[]>([]);
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientPickerOpen, setClientPickerOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<IClientSummary | null>(null);
   const [addresses, setAddresses] = useState<IAddress[]>([]);
   const [selectedAddress, setSelectedAddress] = useState<IAddress | null>(null);
@@ -56,6 +59,8 @@ export default function OrdersScreen() {
   const [orders, setOrders] = useState<OrderListItem[]>([]);
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [selectedTruckId, setSelectedTruckId] = useState<string | null>(null);
+  const [truckSearch, setTruckSearch] = useState('');
+  const [truckPickerOpen, setTruckPickerOpen] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState(localToday());
   const [loadingTrucks, setLoadingTrucks] = useState(false);
   const [truckError, setTruckError] = useState<string | null>(null);
@@ -67,14 +72,40 @@ export default function OrdersScreen() {
     setLoadingClients(true);
     setLoadError(null);
     try {
-      const result = await clientsService.getClients('', 1);
-      setClients(result.items.map(({ id, businessName, taxId }) => ({ id, businessName, taxId })));
+      let page = 1;
+      let result = await clientsService.getClients('', page);
+      const allClients = [...result.items];
+      while (allClients.length < result.total) {
+        page += 1;
+        result = await clientsService.getClients('', page);
+        if (!result.items.length) break;
+        allClients.push(...result.items);
+      }
+      setClients(allClients.map(({ id, businessName, taxId }) => ({ id, businessName, taxId })));
     } catch (error) {
       setLoadError(parseApiError(error, 'No se pudieron cargar los clientes.').message);
     } finally {
       setLoadingClients(false);
     }
   }, []);
+
+  const visibleClients = useMemo(() => {
+    const query = normalizeSearch(clientSearch.trim());
+    if (!query) return clients;
+    return clients.filter(client =>
+      normalizeSearch(client.businessName).startsWith(query) ||
+      client.taxId.startsWith(query),
+    );
+  }, [clientSearch, clients]);
+
+  const visibleTrucks = useMemo(() => {
+    const query = normalizeSearch(truckSearch.trim());
+    if (!query) return trucks;
+    return trucks.filter(truck =>
+      normalizeSearch(truck.licensePlate).startsWith(query) ||
+      normalizeSearch(truck.driverName ?? '').startsWith(query),
+    );
+  }, [truckSearch, trucks]);
 
   const loadOrders = useCallback(async () => {
     setLoadingOrders(true);
@@ -170,7 +201,7 @@ export default function OrdersScreen() {
           if (missing > 0) {
             const existingEntry = entries[0];
             if (existingEntry) {
-              await logisticsService.updateStock(existingEntry.id, { quantityLoaded: existingEntry.quantityLoaded + missing, quantityReturned: existingEntry.quantityReturned });
+              await logisticsService.updateStock(String(truckId), existingEntry.id, { quantityLoaded: existingEntry.quantityLoaded + missing, quantityReturned: existingEntry.quantityReturned });
             } else {
               await logisticsService.loadProduct(String(truckId), { productId: item.productId, deliveryDate, quantityLoaded: missing });
             }
@@ -281,11 +312,10 @@ export default function OrdersScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>1. Cliente</Text><Text style={styles.sectionHint}>Seleccioná quién recibe el pedido</Text></View></View>
             {loadingClients ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : clients.length ? (
-              <View style={styles.chips}>
-                {clients.map(item => <TouchableOpacity key={item.id} style={[styles.clientChip, selectedClient?.id === item.id && styles.clientChipActive]} onPress={() => void chooseClient(item)} disabled={submitting}>
-                  <Text numberOfLines={1} style={[styles.clientChipText, selectedClient?.id === item.id && styles.clientChipTextActive]}>{item.businessName}</Text>
-                </TouchableOpacity>)}
-              </View>
+              <TouchableOpacity style={styles.pickerButton} onPress={() => setClientPickerOpen(true)} disabled={submitting} accessibilityRole="button">
+                <View style={styles.pickerButtonCopy}><Text style={[styles.pickerValue, !selectedClient && styles.pickerPlaceholder]} numberOfLines={1}>{selectedClient?.businessName ?? 'Seleccionar cliente'}</Text>{selectedClient && <Text style={styles.pickerCaption}>{selectedClient.taxId}</Text>}</View>
+                <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
+              </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay clientes disponibles.</Text>}
           </View>
 
@@ -322,21 +352,15 @@ export default function OrdersScreen() {
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} />}
             {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? (
-              <View style={styles.truckChoices}>
-                <TouchableOpacity style={[styles.truckChoice, selectedTruckId === null && styles.truckChoiceActive]} onPress={() => { setSelectedTruckId(null); setOrderError(null); setCanLoadTruckStock(false); }} disabled={submitting}>
-                  <Ionicons name={selectedTruckId === null ? 'radio-button-on' : 'radio-button-off'} size={18} color={selectedTruckId === null ? colors.primary : colors.textSecondary} />
-                  <Text style={[styles.truckChoiceText, selectedTruckId === null && styles.truckChoiceTextActive]}>Sin asignar</Text>
-                </TouchableOpacity>
-                {trucks.map(truck => <TouchableOpacity key={truck.id} style={[styles.truckChoice, selectedTruckId === truck.id && styles.truckChoiceActive]} onPress={() => { setSelectedTruckId(truck.id); setOrderError(null); setCanLoadTruckStock(false); }} disabled={submitting}>
-                  <Ionicons name={selectedTruckId === truck.id ? 'radio-button-on' : 'radio-button-off'} size={18} color={selectedTruckId === truck.id ? colors.primary : colors.textSecondary} />
-                  <View style={styles.truckChoiceInfo}><Text style={[styles.truckChoiceText, selectedTruckId === truck.id && styles.truckChoiceTextActive]}>{truck.licensePlate}</Text><Text style={styles.truckDriver}>{truck.driverName ?? (truck.driverId ? `Chofer ID ${truck.driverId}` : 'Sin chofer asignado')}</Text></View>
-                </TouchableOpacity>)}
-              </View>
+              <TouchableOpacity style={styles.pickerButton} onPress={() => setTruckPickerOpen(true)} disabled={submitting} accessibilityRole="button">
+                <View style={styles.pickerButtonCopy}><Text style={[styles.pickerValue, selectedTruckId === null && styles.pickerPlaceholder]} numberOfLines={1}>{trucks.find(truck => truck.id === selectedTruckId)?.licensePlate ?? 'Sin asignar · Elegir camión (opcional)'}</Text>{selectedTruckId && <Text style={styles.pickerCaption}>{trucks.find(truck => truck.id === selectedTruckId)?.driverName ?? 'Sin chofer asignado'}</Text>}</View>
+                <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
+              </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
           </View>
 
           <View style={styles.footer}>
-            <View style={styles.totalRow}><View><Text style={styles.totalLabel}>TOTAL ESTIMADO</Text><Text style={styles.totalNote}>El backend calcula el importe final</Text></View><Text style={styles.totalAmount}>{money(total())}</Text></View>
+            <View style={styles.totalRow}><View><Text style={styles.totalLabel}>TOTAL ESTIMADO</Text><Text style={styles.totalNote}>El importe puede variar al confirmar el pedido</Text></View><Text style={styles.totalAmount}>{money(total())}</Text></View>
             <TouchableOpacity style={[styles.submitButton, (submitting || !items.length || !selectedClient || !selectedAddress) && styles.submitDisabled]} onPress={() => void handleCreateOrder()} disabled={submitting || !items.length || !selectedClient || !selectedAddress}>
               {submitting ? <><ActivityIndicator color={colors.textInverse} /><Text style={styles.submitText}>Enviando pedido…</Text></> : <><Ionicons name="checkmark-circle-outline" size={20} color={colors.textInverse} /><Text style={styles.submitText}>Enviar pedido</Text></>}
             </TouchableOpacity>
@@ -366,6 +390,24 @@ export default function OrdersScreen() {
           </View>
         </View>
       </Modal>
+      <Modal visible={clientPickerOpen} transparent animationType="slide" onRequestClose={() => setClientPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>CLIENTES</Text><Text style={styles.selectorTitle}>Elegir cliente</Text></View><TouchableOpacity onPress={() => setClientPickerOpen(false)}><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={clientSearch} onChangeText={setClientSearch} placeholder="Buscar por nombre o CUIT" placeholderTextColor={colors.textSecondary} maxLength={25} autoCorrect={false} />{!!clientSearch && <TouchableOpacity onPress={() => setClientSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+          <ScrollView keyboardShouldPersistTaps="handled">{visibleClients.map(client => <TouchableOpacity key={client.id} style={styles.selectorOption} onPress={() => { setClientPickerOpen(false); void chooseClient(client); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{client.businessName}</Text><Text style={styles.selectorOptionSub}>{client.taxId}</Text></View>{selectedClient?.id === client.id && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>)}{!visibleClients.length && <Text style={styles.selectorEmpty}>No se encontraron clientes con ese criterio.</Text>}</ScrollView>
+        </View></View>
+      </Modal>
+      <Modal visible={truckPickerOpen} transparent animationType="slide" onRequestClose={() => setTruckPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>ENTREGA</Text><Text style={styles.selectorTitle}>Elegir camión</Text></View><TouchableOpacity onPress={() => setTruckPickerOpen(false)}><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={truckSearch} onChangeText={setTruckSearch} placeholder="Buscar por patente o chofer" placeholderTextColor={colors.textSecondary} maxLength={25} autoCorrect={false} />{!!truckSearch && <TouchableOpacity onPress={() => setTruckSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+          <ScrollView keyboardShouldPersistTaps="handled">
+            <TouchableOpacity style={styles.selectorOption} onPress={() => { setSelectedTruckId(null); setTruckPickerOpen(false); setOrderError(null); setCanLoadTruckStock(false); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>Sin asignar</Text><Text style={styles.selectorOptionSub}>Pedido sin camión</Text></View>{selectedTruckId === null && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>
+            {visibleTrucks.map(truck => <TouchableOpacity key={truck.id} style={styles.selectorOption} onPress={() => { setSelectedTruckId(truck.id); setTruckPickerOpen(false); setOrderError(null); setCanLoadTruckStock(false); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{truck.licensePlate}</Text><Text style={styles.selectorOptionSub}>{truck.driverName ?? (truck.driverId ? `Chofer ID ${truck.driverId}` : 'Sin chofer asignado')}</Text></View>{selectedTruckId === truck.id && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>)}
+            {!!truckSearch && !visibleTrucks.length && <Text style={styles.selectorEmpty}>No se encontraron camiones con ese criterio.</Text>}
+          </ScrollView>
+        </View></View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -388,11 +430,23 @@ const styles = StyleSheet.create({
   sectionHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   addProductsButton: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.full, backgroundColor: colors.primaryLight },
   addProductsText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  clientChip: { maxWidth: '100%', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.full, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-  clientChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  clientChipText: { ...typography.caption, color: colors.textPrimary, fontWeight: '600' },
-  clientChipTextActive: { color: colors.textInverse },
+  pickerButton: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  pickerButtonCopy: { flex: 1, paddingVertical: spacing.sm },
+  pickerValue: { ...typography.body, color: colors.textPrimary, fontWeight: '600' },
+  pickerPlaceholder: { color: colors.textSecondary, fontWeight: '400' },
+  pickerCaption: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  selectorBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' },
+  selectorModal: { backgroundColor: colors.surface, maxHeight: '82%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
+  selectorHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
+  selectorEyebrow: { ...typography.caption, color: colors.primary, letterSpacing: 1, fontWeight: '700' },
+  selectorTitle: { ...typography.subheading, color: colors.textPrimary },
+  selectorSearch: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 46, paddingHorizontal: spacing.md, marginBottom: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  selectorSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  selectorOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 58, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  selectorOptionCopy: { flex: 1 },
+  selectorOptionTitle: { ...typography.label, color: colors.textPrimary },
+  selectorOptionSub: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  selectorEmpty: { ...typography.body, color: colors.textSecondary, textAlign: 'center', padding: spacing.xl },
   loader: { paddingVertical: spacing.lg },
   addressOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
   addressOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },

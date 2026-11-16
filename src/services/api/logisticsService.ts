@@ -77,30 +77,30 @@ function toStockItem(dto: RawObject): TruckStockItem {
 
 export const logisticsService = {
   async getTrucks(): Promise<Truck[]> {
-    const response = await client.get<unknown>('/truck/get');
+    const response = await client.get<unknown>('/trucks');
     return unwrapList(response.data, ['items', 'content', 'data', 'trucks']).map(toTruck);
   },
 
   async getTruck(id: string): Promise<Truck> {
-    const response = await client.get<unknown>(`/truck/get/${id}`);
+    const response = await client.get<unknown>(`/trucks/${id}`);
     return toTruck(unwrapOne(response.data));
   },
 
   async getActiveTrucks(): Promise<Truck[]> {
-    const response = await client.get<unknown>('/truck/get/active');
+    const response = await client.get<unknown>('/trucks', { params: { active: true } });
     return unwrapList(response.data, ['items', 'content', 'data', 'trucks']).map(toTruck);
   },
 
   async createTruck(payload: TruckWriteRequest): Promise<void> {
-    await client.post('/truck/save', payload);
+    await client.post('/trucks', payload);
   },
 
   async updateTruck(id: string, payload: TruckWriteRequest): Promise<void> {
-    await client.put(`/truck/update/${id}`, payload);
+    await client.put(`/trucks/${id}`, payload);
   },
 
   async activateTruck(id: string): Promise<void> {
-    await client.patch(`/truck/activate/${id}`);
+    await client.patch(`/trucks/${id}/activate`);
   },
 
   async deactivateTruck(id: string): Promise<void> {
@@ -108,23 +108,23 @@ export const logisticsService = {
   },
 
   async deleteTruck(id: string): Promise<void> {
-    await client.delete(`/truck/delete/${id}`);
+    await client.delete(`/trucks/${id}`);
   },
 
   async getTruckStock(truckId: string, date?: string): Promise<TruckStockItem[]> {
-    const response = await client.get<unknown>(`/truck/${truckId}/stock`, { params: date ? { date } : undefined });
+    const response = await client.get<unknown>(`/trucks/${truckId}/stock`, { params: date ? { date } : undefined });
     return unwrapList(response.data, ['items', 'content', 'data', 'stock']).map(toStockItem);
   },
 
   async loadProduct(truckId: string, payload: TruckStockCreateRequest): Promise<void> {
-    await client.post(`/truck/${truckId}/stock`, payload);
+    await client.post(`/trucks/${truckId}/stock`, payload);
   },
 
-  async updateStock(stockId: string, payload: TruckStockUpdateRequest): Promise<void> {
-    await client.put(`/truck/stock/${stockId}`, payload);
+  async updateStock(truckId: string, stockId: string, payload: TruckStockUpdateRequest): Promise<void> {
+    await client.put(`/trucks/${truckId}/stock/${stockId}`, payload);
   },
 
-  async deleteStock(stockId: string): Promise<void> {
-    await client.delete(`/truck/stock/${stockId}`);
+  async deleteStock(truckId: string, stockId: string): Promise<void> {
+    await client.delete(`/trucks/${truckId}/stock/${stockId}`);
   },
 };

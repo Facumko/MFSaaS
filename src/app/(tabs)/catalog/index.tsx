@@ -1,10 +1,11 @@
 // src/app/(tabs)/catalog/index.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -39,15 +40,21 @@ export default function CatalogScreen() {
 
   // Buscador de productos (reactivo, con debounce)
   const [search, setSearch] = useState("");
+  const [categorySearch, setCategorySearch] = useState("");
+  const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
 
-  // Filtro de categorías: se aplica directo al tocar un chip, sin modal
-  // intermedio ni paso de "aplicar" (multi-selección simple).
+  // Filtro de categorías con selección múltiple desde un desplegable.
   const [appliedCategoryIds, setAppliedCategoryIds] = useState<string[]>([]);
 
   const itemCount = useCartStore((state) => state.itemCount());
   const totalCart = useCartStore((state) => state.total());
 
   const activeFilterCount = appliedCategoryIds.length;
+  const visibleCategories = useMemo(() => {
+    const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
+    const query = normalize(categorySearch.trim());
+    return query ? categories.filter(category => normalize(category.name).startsWith(query)) : categories;
+  }, [categories, categorySearch]);
 
   // Cargar productos cada vez que cambia el buscador o el filtro aplicado
   useEffect(() => {
@@ -135,10 +142,11 @@ export default function CatalogScreen() {
           placeholderTextColor={colors.textDisabled}
           value={search}
           onChangeText={setSearch}
+          maxLength={25}
         />
       </View>
 
-      {/* Chips horizontales de categoría: única vía de filtrado */}
+      {/* Selector desplegable de categorías */}
       <View style={styles.filterBar}>
         {loadingCategories ? (
           <ActivityIndicator color={colors.primary} style={{ marginRight: spacing.sm }} />
@@ -149,31 +157,13 @@ export default function CatalogScreen() {
             </Text>
           </TouchableOpacity>
         ) : (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.chipsScroll}
-            contentContainerStyle={styles.chipsScrollContent}
-          >
-            {categories.map((cat) => {
-              const active = appliedCategoryIds.includes(cat.id);
-              return (
-                <TouchableOpacity
-                  key={cat.id}
-                  style={[styles.categoryChip, active && styles.categoryChipActive]}
-                  onPress={() => toggleCategory(cat.id)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text
-                    style={[styles.categoryText, active && styles.categoryTextActive]}
-                  >
-                    {cat.name}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          <TouchableOpacity style={styles.categoryPickerButton} onPress={() => setCategoryPickerVisible(true)} accessibilityRole="button">
+            <View style={styles.categoryPickerCopy}>
+              <Text style={styles.categoryPickerLabel}>Categorías</Text>
+              <Text style={styles.categoryPickerValue} numberOfLines={1}>{activeFilterCount ? `${activeFilterCount} seleccionada${activeFilterCount === 1 ? "" : "s"}` : "Todas las categorías"}</Text>
+            </View>
+            <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
+          </TouchableOpacity>
         )}
 
         {activeFilterCount > 0 && (
@@ -284,6 +274,35 @@ export default function CatalogScreen() {
           </Text>
         </TouchableOpacity>
       )}
+      <Modal visible={categoryPickerVisible} transparent animationType="slide" onRequestClose={() => setCategoryPickerVisible(false)}>
+        <View style={styles.selectorBackdrop}>
+          <View style={styles.selectorModal}>
+            <View style={styles.selectorHeader}>
+              <View><Text style={styles.selectorEyebrow}>CATÁLOGO</Text><Text style={styles.selectorTitle}>Filtrar categorías</Text></View>
+              <TouchableOpacity onPress={() => setCategoryPickerVisible(false)} accessibilityLabel="Cerrar categorías"><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity>
+            </View>
+            <View style={styles.selectorSearch}>
+              <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
+              <TextInput style={styles.selectorSearchInput} value={categorySearch} onChangeText={setCategorySearch} placeholder="Buscar categoría" placeholderTextColor={colors.textSecondary} maxLength={25} autoCorrect={false} />
+              {!!categorySearch && <TouchableOpacity onPress={() => setCategorySearch("")} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}
+            </View>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {visibleCategories.map(category => {
+                const active = appliedCategoryIds.includes(category.id);
+                return <TouchableOpacity key={category.id} style={styles.selectorOption} onPress={() => toggleCategory(category.id)}>
+                  <Text style={[styles.selectorOptionText, active && styles.selectorOptionTextActive]}>{category.name}</Text>
+                  <Ionicons name={active ? "checkbox" : "square-outline"} size={21} color={active ? colors.primary : colors.textSecondary} />
+                </TouchableOpacity>;
+              })}
+              {!visibleCategories.length && <Text style={styles.selectorEmpty}>No se encontraron categorías con ese criterio.</Text>}
+            </ScrollView>
+            <View style={styles.selectorActions}>
+              <TouchableOpacity style={styles.selectorClearButton} onPress={clearAllFilters}><Text style={styles.selectorClearText}>Limpiar selección</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.selectorDoneButton} onPress={() => setCategoryPickerVisible(false)}><Text style={styles.selectorDoneText}>Listo</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -359,33 +378,29 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
     gap: spacing.sm,
   },
-  chipsScroll: {
-    flex: 1,
-  },
-  chipsScrollContent: {
-    gap: spacing.sm,
-    alignItems: "center",
-  },
   chipsErrorContainer: {
     flex: 1,
   },
-  categoryChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    backgroundColor: colors.primaryLight,
-  },
-  categoryChipActive: {
-    backgroundColor: colors.primary,
-  },
-  categoryText: {
-    color: colors.primary,
-    ...typography.caption,
-    fontWeight: "500",
-  },
-  categoryTextActive: {
-    color: colors.textInverse,
-  },
+  categoryPickerButton: { flex: 1, minHeight: 48, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  categoryPickerCopy: { flex: 1 },
+  categoryPickerLabel: { ...typography.caption, color: colors.textSecondary },
+  categoryPickerValue: { ...typography.label, color: colors.textPrimary, marginTop: 1 },
+  selectorBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.45)" },
+  selectorModal: { backgroundColor: colors.surface, maxHeight: "82%", borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
+  selectorHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.md },
+  selectorEyebrow: { ...typography.caption, color: colors.primary, letterSpacing: 1, fontWeight: "700" },
+  selectorTitle: { ...typography.subheading, color: colors.textPrimary },
+  selectorSearch: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 46, paddingHorizontal: spacing.md, marginBottom: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  selectorSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  selectorOption: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 50, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  selectorOptionText: { ...typography.body, color: colors.textPrimary },
+  selectorOptionTextActive: { color: colors.primary, fontWeight: "700" },
+  selectorEmpty: { ...typography.body, color: colors.textSecondary, textAlign: "center", padding: spacing.xl },
+  selectorActions: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: spacing.md, marginTop: spacing.md, paddingTop: spacing.md, borderTopWidth: 1, borderTopColor: colors.border },
+  selectorClearButton: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
+  selectorClearText: { ...typography.label, color: colors.error },
+  selectorDoneButton: { minWidth: 100, alignItems: "center", paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: radius.md, backgroundColor: colors.primary },
+  selectorDoneText: { ...typography.label, color: colors.textInverse, fontWeight: "700" },
   clearLink: {
     paddingHorizontal: spacing.xs,
   },

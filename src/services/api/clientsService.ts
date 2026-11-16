@@ -142,13 +142,13 @@ export const clientsService = {
    * El backend no soporta search ni paginación todavía: se filtra/pagina en el cliente.
    */
   async getClients(search = '', page = 1): Promise<{ items: IClient[]; total: number }> {
-    const response = await client.get<CustomerDto[]>('/customer/get');
+    const response = await client.get<CustomerDto[]>('/customers', { params: { active: true } });
     let items = response.data.map(toIClient);
 
     if (search) {
-      const q = search.toLowerCase();
+      const q = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
       items = items.filter(
-        c => c.businessName.toLowerCase().includes(q) || c.taxId.includes(q)
+        c => c.businessName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(q) || c.taxId.startsWith(q)
       );
     }
 
@@ -160,7 +160,7 @@ export const clientsService = {
 
   /** GET /customer/get/{id} */
   async getClientById(id: string): Promise<IClient> {
-    const response = await client.get<CustomerDto>(`/customer/get/${id}`);
+    const response = await client.get<CustomerDto>(`/customers/${id}`);
     const customer = toIClient(response.data);
     const addresses = response.data.addresses?.map(toIAddress) ?? await this.getClientAddresses(id);
     return { ...customer, addresses };
@@ -183,7 +183,7 @@ export const clientsService = {
   },
 
   async getDebtors(): Promise<{ items: IDebtor[] }> {
-    const response = await client.get<CustomerDto[]>('/customer/get');
+    const response = await client.get<CustomerDto[]>('/customers', { params: { active: true } });
     const customers = response.data.map(toIClient);
     const items: Array<IDebtor | null> = await Promise.all(customers.map(async (customer): Promise<IDebtor | null> => {
       const ledger = await ledgerService.getCustomerLedger(customer.id).catch(() => null);
@@ -204,7 +204,7 @@ export const clientsService = {
       ...toCustomerDto(dto),
       addresses: dto.addresses?.map(toAddressRequest),
     };
-    const response = await client.post<CustomerDto>('/customer/save', body);
+    const response = await client.post<CustomerDto>('/customers', body);
     const created = toIClient(response.data);
     if (response.data.id != null && dto.addresses?.length) {
       created.addresses = await this.getClientAddresses(String(response.data.id));
@@ -214,7 +214,7 @@ export const clientsService = {
 
   /** PUT /customer/update/{id} */
   async updateClient(id: string, dto: Partial<IClient>): Promise<IClient> {
-    const response = await client.put<CustomerDto>(`/customer/update/${id}`, toCustomerDto(dto));
+    const response = await client.put<CustomerDto>(`/customers/${id}`, toCustomerDto(dto));
     if (dto.addresses) {
       const existingAddresses = await this.getClientAddresses(id);
       const submittedIds = new Set(dto.addresses.filter(address => /^\d+$/.test(address.id)).map(address => address.id));
@@ -241,7 +241,7 @@ export const clientsService = {
 
   /** DELETE /customer/delete/{id} — baja definitiva */
   async deleteClient(id: string): Promise<void> {
-    await client.delete(`/customer/delete/${id}`);
+    await client.delete(`/customers/${id}`);
   },
 
   /** PATCH /customer/desactivate/{id} — baja lógica (soft delete) */
@@ -255,7 +255,7 @@ export const clientsService = {
    * el mismo patrón que /customer/desactivate/{id}.
    */
   async activateClient(id: string): Promise<void> {
-    await client.patch(`/customer/activate/${id}`);
+    await client.patch(`/customers/${id}/activate`);
   },
 
   /** POST /customers/{customerId}/ledger/payments. La API solo recibe amount. */

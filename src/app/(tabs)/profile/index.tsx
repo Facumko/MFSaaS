@@ -11,7 +11,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from 'react-native';
@@ -22,7 +21,6 @@ export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
   async function handleConfirmLogout() {
     setLogoutLoading(true);
@@ -67,26 +65,6 @@ export default function ProfileScreen() {
           <Ionicons name="create-outline" size={16} color={colors.primary} />
           <Text style={styles.editProfileText}>Editar perfil</Text>
         </Pressable>
-      </View>
-
-      <Text style={styles.sectionLabel}>Ajustes</Text>
-      <View style={styles.section}>
-        <View style={styles.row}>
-          <View style={styles.rowLeft}>
-            <Ionicons
-              name="notifications-outline"
-              size={20}
-              color={colors.textPrimary}
-            />
-            <Text style={styles.rowText}>Notificaciones</Text>
-          </View>
-          <Switch
-            value={notificationsEnabled}
-            onValueChange={setNotificationsEnabled}
-            trackColor={{ false: colors.border, true: colors.primaryLight }}
-            thumbColor={notificationsEnabled ? colors.primary : colors.surface}
-          />
-        </View>
       </View>
 
       <Text style={styles.sectionLabel}>Ayuda</Text>

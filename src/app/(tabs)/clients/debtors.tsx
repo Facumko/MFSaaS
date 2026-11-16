@@ -1,12 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     RefreshControl,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
@@ -23,6 +24,7 @@ export default function DebtorsScreen() {
   const [debtors, setDebtors] = useState<IDebtor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     fetchDebtors();
@@ -49,6 +51,14 @@ export default function DebtorsScreen() {
   };
 
   const totalDebt = debtors.reduce((sum, debtor) => sum + debtor.totalDebt, 0);
+  const visibleDebtors = useMemo(() => {
+    const query = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    if (!query) return debtors;
+    return debtors.filter(({ client }) =>
+      client.businessName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(query) ||
+      client.taxId.startsWith(query),
+    );
+  }, [debtors, search]);
 
   const renderDebtorItem = ({ item }: { item: IDebtor }) => (
     <TouchableOpacity
@@ -131,10 +141,28 @@ export default function DebtorsScreen() {
         </View>
       )}
 
+      <View style={styles.searchContainer}>
+        <Ionicons name="search" size={20} color={colors.textSecondary} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Buscar por nombre o CUIT"
+          placeholderTextColor={colors.textSecondary}
+          value={search}
+          onChangeText={setSearch}
+          maxLength={25}
+          autoCorrect={false}
+        />
+        {!!search && (
+          <TouchableOpacity onPress={() => setSearch('')} accessibilityLabel="Borrar búsqueda">
+            <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Debtors List */}
-      {debtors.length > 0 ? (
+      {visibleDebtors.length > 0 ? (
         <FlashList
-          data={debtors}
+          data={visibleDebtors}
           renderItem={renderDebtorItem}
           keyExtractor={(item) => item.client.id}
           contentContainerStyle={styles.listContent}
@@ -147,7 +175,9 @@ export default function DebtorsScreen() {
           }
         />
       ) : (
-        renderListEmpty()
+        search && !loading && !error ? (
+          <View style={styles.emptyContainer}><Text style={styles.emptyMessage}>No se encontraron deudores con ese criterio.</Text></View>
+        ) : renderListEmpty()
       )}
     </View>
   );
@@ -181,6 +211,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: colors.error,
   },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    height: 48,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+  },
+  searchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
   summaryLabel: {
     ...typography.caption,
     color: colors.textSecondary,

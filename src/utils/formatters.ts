@@ -1,7 +1,15 @@
-import dayjs from 'dayjs';
-import 'dayjs/locale/es';
-
-dayjs.locale('es');
+const dateFormatter = new Intl.DateTimeFormat('es-AR', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+});
+const dateTimeFormatter = new Intl.DateTimeFormat('es-AR', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
 
 /** Formatea número como moneda argentina: 12500 → "$12.500" */
 export function formatCurrency(amount: number): string {
@@ -10,17 +18,33 @@ export function formatCurrency(amount: number): string {
 
 /** Formatea fecha ISO a formato legible: "15 jun 2026" */
 export function formatDate(iso: string): string {
-  return dayjs(iso).format('D MMM YYYY');
+  return dateFormatter.format(new Date(iso));
 }
 
 /** Formatea fecha ISO con hora: "15 jun 2026 · 14:30" */
 export function formatDateTime(iso: string): string {
-  return dayjs(iso).format('D MMM YYYY · HH:mm');
+  return dateTimeFormatter.format(new Date(iso)).replace(',', ' ·');
 }
 
 /** Tiempo relativo: "hace 2 horas" */
 export function fromNow(iso: string): string {
-  return dayjs(iso).fromNow();
+  const elapsedSeconds = (new Date(iso).getTime() - Date.now()) / 1000;
+  const units: Array<[number, Intl.RelativeTimeFormatUnit]> = [
+    [60, 'second'],
+    [60, 'minute'],
+    [24, 'hour'],
+    [30, 'day'],
+    [12, 'month'],
+    [Number.POSITIVE_INFINITY, 'year'],
+  ];
+  let value = elapsedSeconds;
+  for (const [limit, unit] of units) {
+    if (Math.abs(value) < limit) {
+      return new Intl.RelativeTimeFormat('es', { numeric: 'auto' }).format(Math.round(value), unit);
+    }
+    value /= limit;
+  }
+  return '';
 }
 
 /** Formatea CUIT con guiones: "20123456781" → "20-12345678-1" */

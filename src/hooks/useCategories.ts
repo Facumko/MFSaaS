@@ -38,8 +38,8 @@ export const useCategories = (): UseCategoriesReturn => {
   // El backend no soporta search: se filtra en el cliente
   const categories = useMemo(() => {
     if (!search) return allCategories;
-    const q = search.toLowerCase();
-    return allCategories.filter(c => c.name.toLowerCase().includes(q));
+    const q = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    return allCategories.filter(c => c.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(q));
   }, [allCategories, search]);
 
   return {

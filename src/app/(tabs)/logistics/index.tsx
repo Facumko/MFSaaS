@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -32,6 +32,7 @@ export default function LogisticsScreen() {
   const user = useAuthStore(state => state.user);
   const isDriver = user?.role === 'delivery';
   const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [truckSearch, setTruckSearch] = useState('');
   const [employees, setEmployees] = useState<ManagedUser[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
   const [selectedTruck, setSelectedTruck] = useState<Truck | null>(null);
@@ -54,6 +55,16 @@ export default function LogisticsScreen() {
   const [editLoaded, setEditLoaded] = useState('');
   const [editReturned, setEditReturned] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
+
+  const visibleTrucks = useMemo(() => {
+    const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    const query = normalize(truckSearch.trim());
+    if (!query) return trucks;
+    return trucks.filter(truck =>
+      normalize(truck.licensePlate).startsWith(query) ||
+      normalize(truck.driverName ?? '').startsWith(query),
+    );
+  }, [truckSearch, trucks]);
 
   const loadTrucks = useCallback(async () => {
     setLoadingTrucks(true);
@@ -185,8 +196,9 @@ export default function LogisticsScreen() {
     setSaving(true);
     setError(null);
     try {
-      await logisticsService.updateStock(editingStock.id, { quantityLoaded: loaded, quantityReturned: returned });
       const truck = selectedTruck;
+      if (!truck) throw new Error('Seleccioná un camión para actualizar su stock.');
+      await logisticsService.updateStock(truck.id, editingStock.id, { quantityLoaded: loaded, quantityReturned: returned });
       setEditingStock(null);
       if (truck) await loadStock(truck, stockDate);
     } catch (err) {
@@ -204,7 +216,8 @@ export default function LogisticsScreen() {
         if (selectedTruck?.id === deleteTarget.id) { setSelectedTruck(null); setStock([]); }
         await loadTrucks();
       } else {
-        await logisticsService.deleteStock(deleteTarget.id);
+        if (!selectedTruck) throw new Error('Seleccioná un camión para eliminar stock.');
+        await logisticsService.deleteStock(selectedTruck.id, deleteTarget.id);
         if (selectedTruck) await loadStock(selectedTruck, stockDate);
       }
       setDeleteTarget(null);
@@ -221,7 +234,7 @@ export default function LogisticsScreen() {
         <View style={styles.headerIcon}><Ionicons name="bus-outline" size={24} color={colors.primary} /></View>
       </View>
 
-      {!isDriver && <TouchableOpacity style={styles.assignOrdersButton} onPress={() => router.push('/(tabs)/logistics/orders')}>
+      {!isDriver && <TouchableOpacity style={styles.assignOrdersButton} onPress={() => router.push('/(tabs)/logistics/orders' as any)}>
         <View style={styles.assignOrdersIcon}><Ionicons name="clipboard-outline" size={19} color={colors.primary} /></View>
         <View style={styles.assignOrdersCopy}><Text style={styles.assignOrdersTitle}>Asignar pedidos a camiones</Text><Text style={styles.assignOrdersHint}>Organizá qué pedidos lleva cada unidad</Text></View>
         <Ionicons name="chevron-forward" size={19} color={colors.primary} />
@@ -234,7 +247,21 @@ export default function LogisticsScreen() {
         {!isDriver && <TouchableOpacity style={styles.primarySmallButton} onPress={() => openTruckForm()}><Ionicons name="add" size={18} color={colors.textInverse} /><Text style={styles.primarySmallText}>Agregar</Text></TouchableOpacity>}
       </View>
 
-      {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? trucks.map(truck => (
+      {!!trucks.length && <View style={styles.truckSearchBox}>
+        <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
+        <TextInput
+          style={styles.truckSearchInput}
+          value={truckSearch}
+          onChangeText={setTruckSearch}
+          placeholder="Buscar camión por patente o chofer"
+          placeholderTextColor={colors.textSecondary}
+          maxLength={25}
+          autoCorrect={false}
+        />
+        {!!truckSearch && <TouchableOpacity onPress={() => setTruckSearch('')} accessibilityLabel="Borrar búsqueda de camiones"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}
+      </View>}
+
+      {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : visibleTrucks.length ? visibleTrucks.map(truck => (
         <View key={truck.id} style={[styles.truckCard, selectedTruck?.id === truck.id && styles.truckCardSelected]}>
           <TouchableOpacity style={styles.truckMain} onPress={() => void loadStock(truck, stockDate)}>
             <View style={styles.truckIcon}><Ionicons name="bus" size={20} color={colors.primary} /></View>
@@ -248,7 +275,7 @@ export default function LogisticsScreen() {
             <TouchableOpacity style={styles.truckAction} onPress={() => setDeleteTarget({ kind: 'truck', id: truck.id, label: truck.licensePlate })}><Ionicons name="trash-outline" size={16} color={colors.error} /><Text style={[styles.truckActionText, { color: colors.error }]}>Eliminar</Text></TouchableOpacity>
           </View>}
         </View>
-      )) : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? 'Pedile a un administrador que asigne tu usuario a un camión.' : 'Agregá un camión para gestionar su stock.'}</Text></View>}
+      )) : truckSearch.trim() && trucks.length ? <View style={styles.emptyCard}><Text style={styles.emptyText}>No se encontraron camiones con ese criterio.</Text></View> : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? 'Pedile a un administrador que asigne tu usuario a un camión.' : 'Agregá un camión para gestionar su stock.'}</Text></View>}
 
       {selectedTruck && <View style={styles.stockSection}>
         <View style={styles.sectionHeader}>
@@ -325,6 +352,8 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md, marginTop: spacing.sm },
   sectionTitle: { ...typography.subheading, color: colors.textPrimary },
   sectionHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  truckSearchBox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 46, paddingHorizontal: spacing.md, marginBottom: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  truckSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
   primarySmallButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, backgroundColor: colors.primary, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   primarySmallText: { ...typography.caption, color: colors.textInverse, fontWeight: '700' },
   loader: { paddingVertical: spacing.xl },
