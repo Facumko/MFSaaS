@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router/react-navigation';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -12,22 +13,25 @@ import {
   View,
 } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
-import { logisticsService, Truck } from '../../../services/api/logisticsService';
+import { logisticsService, Truck, TruckStockRecord } from '../../../services/api/logisticsService';
 import { ApiOrderStatus, OrderListItem, salesService } from '../../../services/api/salesService';
 import { ManagedUser, usersService } from '../../../services/api/usersService';
+import { productsService } from '../../../services/api/productsService';
+import { authService } from '../../../services/api/authService';
+import { SelectField } from '../../../components/ui/SelectField';
 import { useAuthStore } from '../../../store';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
 
 const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'Cancelado' };
-const isDeliveryRole = (roleName: string) => /delivery|driver|chofer|repartidor/i.test(roleName);
+const isDeliveryRole = (roleName: string, roleId?: string) => /delivery|driver|chofer|repartidor/i.test(roleName) || roleId === '4';
 
 export default function LogisticsScreen() {
   const router = useRouter();
   const user = useAuthStore(state => state.user);
-  const { canViewLogistics, canManageLogistics } = usePermissions();
-  const isDriver = user?.role === 'delivery';
+  const { canViewLogistics, canManageLogistics, canAssignTruckToDriver, canLoadTruckStock, isDelivery, isDepot } = usePermissions();
+  const isDriver = isDelivery;
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [employees, setEmployees] = useState<ManagedUser[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
@@ -38,7 +42,19 @@ export default function LogisticsScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [truckOrdersError, setTruckOrdersError] = useState<string | null>(null);
+  const [truckStock, setTruckStock] = useState<TruckStockRecord[]>([]);
+  const [stockProducts, setStockProducts] = useState<{ id: string; name: string; unit: string }[]>([]);
+  const [selectedStockProductId, setSelectedStockProductId] = useState<string | null>(null);
+  const [stockQuantity, setStockQuantity] = useState('');
+  const [stockDate, setStockDate] = useState(() => {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  });
+  const [loadingStock, setLoadingStock] = useState(false);
+  const [savingStock, setSavingStock] = useState(false);
+  const [stockError, setStockError] = useState<string | null>(null);
   const [truckModal, setTruckModal] = useState(false);
+  const [driverAssignmentTruck, setDriverAssignmentTruck] = useState<Truck | null>(null);
   const [editingTruck, setEditingTruck] = useState<Truck | null>(null);
   const [plate, setPlate] = useState('');
   const [driverId, setDriverId] = useState('');
@@ -50,8 +66,12 @@ export default function LogisticsScreen() {
     setError(null);
     try {
       const result = isDriver
-        ? user?.truckId ? [await logisticsService.getTruck(user.truckId)] : []
-        : await logisticsService.getTrucks();
+        ? user?.truckId
+          ? [await logisticsService.getTruck(user.truckId)]
+          : []
+        : isDepot
+          ? await logisticsService.getActiveTrucks()
+          : await logisticsService.getTrucks();
       setTrucks(result);
       setSelectedTruck(current => current ? result.find(truck => truck.id === current.id) ?? null : null);
     } catch (err) {
@@ -59,14 +79,21 @@ export default function LogisticsScreen() {
     } finally {
       setLoadingTrucks(false);
     }
-  }, [isDriver, user?.truckId]);
+  }, [isDriver, isDepot, user?.truckId]);
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmployees(true);
-    try { setEmployees((await usersService.getUsers()).filter(user => user.active && isDeliveryRole(user.roleName))); }
+    try { setEmployees((await usersService.getUsers()).filter(user => user.active && isDeliveryRole(user.roleName, user.roleId))); }
     catch { setEmployees([]); }
     finally { setLoadingEmployees(false); }
   }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (!isDriver || !user?.username) return;
+    void authService.getCurrentUser(user.username).then(profile => useAuthStore.getState().updateUser(profile)).catch(() => {
+      // Mantener el perfil actual si el refresh de /auth/me falla temporalmente.
+    });
+  }, [isDriver, user?.username]));
 
   const loadTruckOrders = useCallback(async (truck: Truck) => {
     setLoadingTruckOrders(true);
@@ -81,9 +108,25 @@ export default function LogisticsScreen() {
     } finally { setLoadingTruckOrders(false); }
   }, []);
 
+  const loadTruckStock = useCallback(async (truck: Truck) => {
+    setLoadingStock(true);
+    setStockError(null);
+    try {
+      const [records, products] = await Promise.all([
+        logisticsService.getTruckStock(truck.id, stockDate),
+        productsService.getProducts('', [], [], true),
+      ]);
+      setTruckStock(records);
+      setStockProducts(products.items.map(product => ({ id: product.id, name: product.name, unit: product.unit })));
+    } catch (err) {
+      setStockError(parseApiError(err, 'No se pudo cargar el stock del camión.').message);
+    } finally { setLoadingStock(false); }
+  }, [stockDate]);
+
   const selectTruck = (truck: Truck) => {
     setSelectedTruck(truck);
     void loadTruckOrders(truck);
+    if (canLoadTruckStock) void loadTruckStock(truck);
   };
 
   useEffect(() => {
@@ -110,7 +153,7 @@ export default function LogisticsScreen() {
     }
     if (normalizedDriverId && normalizedDriverId !== editingTruck?.driverId) {
       const eligibleDriver = employees.find(employee => employee.id === normalizedDriverId);
-      if (!eligibleDriver || !isDeliveryRole(eligibleDriver.roleName)) {
+      if (!eligibleDriver || !isDeliveryRole(eligibleDriver.roleName, eligibleDriver.roleId)) {
         setError('Solo se puede asignar al camión un usuario activo con rol de repartidor.'); return;
       }
       const assignedTruck = trucks.find(truck => truck.active && truck.id !== editingTruck?.id && truck.driverId === normalizedDriverId);
@@ -129,6 +172,47 @@ export default function LogisticsScreen() {
     } catch (err) {
       setError(parseApiError(err, 'No se pudo guardar el camión.').message);
     } finally { setSaving(false); }
+  };
+
+  const saveDriverAssignment = async (nextDriverId: string | null) => {
+    if (!canAssignTruckToDriver || !driverAssignmentTruck) return;
+    const truck = driverAssignmentTruck;
+    const numericDriverId = nextDriverId == null ? null : Number(nextDriverId);
+    if (numericDriverId != null && (!Number.isInteger(numericDriverId) || numericDriverId < 1)) {
+      setError('El ID del chofer debe ser un número válido.');
+      return;
+    }
+    if (nextDriverId && !employees.some(employee => employee.id === nextDriverId && isDeliveryRole(employee.roleName, employee.roleId))) {
+      setError('Solo se puede asignar un usuario activo con rol de repartidor.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await logisticsService.updateTruck(truck.id, { licensePlate: truck.licensePlate, driverId: numericDriverId });
+      setDriverAssignmentTruck(null);
+      await loadTrucks();
+    } catch (err) {
+      setError(parseApiError(err, 'No se pudo asignar el chofer a este camión.').message);
+    } finally { setSaving(false); }
+  };
+
+  const loadStockProduct = async () => {
+    if (!canLoadTruckStock || !selectedTruck) return;
+    const productId = Number(selectedStockProductId);
+    const quantityLoaded = Number(stockQuantity.replace(',', '.'));
+    if (!Number.isInteger(productId) || productId < 1) { setStockError('Elegí un producto.'); return; }
+    if (!Number.isFinite(quantityLoaded) || quantityLoaded <= 0) { setStockError('Ingresá una cantidad mayor a cero.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(stockDate)) { setStockError('Ingresá una fecha válida con formato AAAA-MM-DD.'); return; }
+    setSavingStock(true);
+    setStockError(null);
+    try {
+      await logisticsService.loadTruckProduct(selectedTruck.id, { productId, deliveryDate: stockDate, quantityLoaded });
+      setStockQuantity('');
+      await loadTruckStock(selectedTruck);
+    } catch (err) {
+      setStockError(parseApiError(err, 'No se pudo cargar el producto en el camión.').message);
+    } finally { setSavingStock(false); }
   };
 
   const toggleTruck = async (truck: Truck) => {
@@ -169,8 +253,9 @@ export default function LogisticsScreen() {
             <TouchableOpacity style={styles.truckAction} onPress={() => openTruckForm(truck)}><Ionicons name="create-outline" size={16} color={colors.textSecondary} /><Text style={styles.truckActionText}>Editar</Text></TouchableOpacity>
             <TouchableOpacity style={styles.truckAction} onPress={() => void toggleTruck(truck)} disabled={saving}><Ionicons name={truck.active ? 'pause-circle-outline' : 'play-circle-outline'} size={16} color={colors.textSecondary} /><Text style={styles.truckActionText}>{truck.active ? 'Desactivar' : 'Activar'}</Text></TouchableOpacity>
           </View>}
+          {canAssignTruckToDriver && truck.active && <TouchableOpacity style={styles.assignDriverButton} onPress={() => { setDriverAssignmentTruck(truck); setError(null); }} disabled={saving}><Ionicons name="person-add-outline" size={17} color={colors.primary} /><Text style={styles.assignDriverText}>{truck.driverId ? 'Cambiar chofer' : 'Asignar chofer'}</Text></TouchableOpacity>}
         </View>
-      )) : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? 'Pedile a un administrador que asigne tu usuario a un camión.' : 'Agregá un camión para asignar pedidos y choferes.'}</Text></View>}
+      )) : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? user?.truckId ? 'No se encontró tu camión asignado' : 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? user?.truckId ? 'Actualizá la lista o contactá a Depósito o Admin.' : 'Solicitá a Depósito o Admin que te asignen un camión.' : isDepot ? 'Cuando haya camiones activos, podés asignar choferes y pedidos desde esta pantalla.' : 'Agregá un camión para asignar pedidos y choferes.'}</Text></View>}
 
       {selectedTruck && <View style={styles.truckOrdersSection}>
         <View style={styles.ordersHeader}>
@@ -187,6 +272,18 @@ export default function LogisticsScreen() {
 
       </View>}
 
+      {selectedTruck && canLoadTruckStock && <View style={styles.stockSection}>
+        <View style={styles.ordersHeader}><View><Text style={styles.sectionTitle}>Stock de {selectedTruck.licensePlate}</Text><Text style={styles.sectionHint}>Carga de productos para el reparto</Text></View><TouchableOpacity style={styles.refreshOrders} onPress={() => void loadTruckStock(selectedTruck)} disabled={loadingStock}><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.refreshText}>Actualizar</Text></TouchableOpacity></View>
+        {!!stockError && <FormErrorBanner message={stockError} onRetry={() => void loadTruckStock(selectedTruck)} disabled={loadingStock || savingStock} />}
+        <View style={styles.stockForm}>
+          <SelectField options={stockProducts.map(product => ({ value: product.id, label: `${product.name} · ${product.unit}` }))} value={selectedStockProductId} onChange={setSelectedStockProductId} placeholder="Seleccioná un producto" searchPlaceholder="Buscar producto..." disabled={loadingStock || savingStock} />
+          <TextInput value={stockQuantity} onChangeText={setStockQuantity} style={styles.input} placeholder="Cantidad a cargar" keyboardType="decimal-pad" editable={!savingStock} />
+          <TextInput value={stockDate} onChangeText={setStockDate} style={styles.input} placeholder="AAAA-MM-DD" maxLength={10} editable={!savingStock} />
+          <TouchableOpacity style={styles.stockLoadButton} onPress={() => void loadStockProduct()} disabled={savingStock || loadingStock}>{savingStock ? <ActivityIndicator color={colors.textInverse} /> : <><Ionicons name="cube-outline" size={17} color={colors.textInverse} /><Text style={styles.primarySmallText}>Cargar al camión</Text></>}</TouchableOpacity>
+        </View>
+        {loadingStock ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : truckStock.length ? truckStock.map(record => <View key={record.id} style={styles.stockRow}><View style={styles.stockProductInfo}><Text style={styles.assignedProductName}>{record.productName ?? stockProducts.find(product => product.id === record.productId)?.name ?? `Producto #${record.productId}`}</Text><Text style={styles.sectionHint}>{record.deliveryDate ?? stockDate}</Text></View><Text style={styles.stockQuantity}>{record.quantityLoaded} cargados · {record.quantityReturned} devueltos</Text></View>) : <Text style={styles.emptyText}>Todavía no hay productos cargados para esta fecha.</Text>}
+      </View>}
+
       <Modal visible={truckModal} transparent animationType="fade" onRequestClose={() => setTruckModal(false)}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard}>
           <Text style={styles.modalTitle}>{editingTruck ? 'Editar camión' : 'Nuevo camión'}</Text>
@@ -198,6 +295,19 @@ export default function LogisticsScreen() {
             {employees.filter(employee => !trucks.some(truck => truck.active && truck.id !== editingTruck?.id && truck.driverId === employee.id)).map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, driverId === employee.id && styles.employeeChoiceSelected]} onPress={() => setDriverId(employee.id)} disabled={saving}><Text style={[styles.employeeChoiceText, driverId === employee.id && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : employee.roleId ? ` · Rol ${employee.roleId}` : ''}</Text></TouchableOpacity>)}
           </ScrollView> : <View><Text style={styles.modalDescription}>No hay empleados disponibles para asignar.</Text><TouchableOpacity onPress={() => void loadEmployees()}><Text style={styles.refreshText}>Reintentar carga de usuarios</Text></TouchableOpacity></View>}
           <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setTruckModal(false)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void saveTruck()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Guardar</Text>}</TouchableOpacity></View>
+        </View></View>
+      </Modal>
+
+      <Modal visible={!!driverAssignmentTruck} transparent animationType="fade" onRequestClose={() => setDriverAssignmentTruck(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Asignar chofer</Text>
+          <Text style={styles.modalDescription}>Camión {driverAssignmentTruck?.licensePlate}. El chofer verá únicamente esta unidad y sus pedidos.</Text>
+          {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <ScrollView style={styles.employeePicker} nestedScrollEnabled>
+            <TouchableOpacity style={[styles.employeeChoice, !driverAssignmentTruck?.driverId && styles.employeeChoiceSelected]} onPress={() => void saveDriverAssignment(null)} disabled={saving}><Text style={[styles.employeeChoiceText, !driverAssignmentTruck?.driverId && styles.employeeChoiceTextSelected]}>Dejar sin chofer</Text></TouchableOpacity>
+            {employees.filter(employee => !trucks.some(truck => truck.active && truck.id !== driverAssignmentTruck?.id && truck.driverId === employee.id)).map(employee => <TouchableOpacity key={employee.id} style={styles.employeeChoice} onPress={() => void saveDriverAssignment(employee.id)} disabled={saving}><Text style={styles.employeeChoiceText}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}</Text></TouchableOpacity>)}
+          </ScrollView>}
+          {!!error && <Text style={styles.modalError}>{error}</Text>}
+          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setDriverAssignmentTruck(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Cerrar</Text></TouchableOpacity></View>
         </View></View>
       </Modal>
 
@@ -233,10 +343,18 @@ const styles = StyleSheet.create({
   truckActions: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: colors.border, paddingHorizontal: spacing.md, paddingVertical: spacing.xs, justifyContent: 'flex-end', gap: spacing.md },
   truckAction: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: spacing.xs },
   truckActionText: { ...typography.caption, color: colors.textSecondary, fontSize: 11, fontWeight: '600' },
+  assignDriverButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.sm },
+  assignDriverText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
   emptyCard: { alignItems: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.xl },
   emptyTitle: { ...typography.label, color: colors.textPrimary, marginTop: spacing.sm },
   emptyText: { ...typography.caption, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs },
   truckOrdersSection: { marginTop: spacing.md },
+  stockSection: { marginTop: spacing.lg, padding: spacing.md, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  stockForm: { gap: spacing.sm, marginBottom: spacing.md },
+  stockLoadButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, backgroundColor: colors.primary, borderRadius: radius.sm, padding: spacing.md },
+  stockRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: spacing.sm },
+  stockProductInfo: { flex: 1 },
+  stockQuantity: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', textAlign: 'right' },
   ordersHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm, marginTop: spacing.sm },
   assignedOrderCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
   assignedOrderHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.xs },

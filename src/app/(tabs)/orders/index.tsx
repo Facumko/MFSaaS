@@ -47,10 +47,10 @@ const statusCopy: Record<string, string> = {
 export default function OrdersScreen() {
   const router = useRouter();
   const user = useAuthStore(state => state.user);
-  const { canAssignOrdersToTruck, canViewOrders } = usePermissions();
-  const isDriver = user?.role === 'delivery';
+  const { canAssignOrdersToTruck, canViewOrders, canRegisterSale, isDelivery, isAdmin } = usePermissions();
+  const isDriver = isDelivery;
   const { items, total, updateQty, clearCart } = useCartStore();
-  const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
+  const [mode, setMode] = useState<ScreenMode>(isDriver || !canRegisterSale ? 'history' : 'new');
   const [clients, setClients] = useState<IClientSummary[]>([]);
   const [selectedClient, setSelectedClient] = useState<IClientSummary | null>(null);
   const [addresses, setAddresses] = useState<IAddress[]>([]);
@@ -248,8 +248,8 @@ export default function OrdersScreen() {
     }
   };
 
-  useEffect(() => { if (canViewOrders && !isDriver) void loadClients(); }, [canViewOrders, isDriver, loadClients]);
-  useEffect(() => { if (canViewOrders && !isDriver) void loadTrucks(); }, [canViewOrders, isDriver, loadTrucks]);
+  useEffect(() => { if (canViewOrders && canRegisterSale && !isDriver) void loadClients(); }, [canViewOrders, canRegisterSale, isDriver, loadClients]);
+  useEffect(() => { if (canViewOrders && canAssignOrdersToTruck && !isDriver) void loadTrucks(); }, [canViewOrders, canAssignOrdersToTruck, isDriver, loadTrucks]);
   useEffect(() => { if (canViewOrders && (isDriver || mode === 'history')) void loadOrders(); }, [canViewOrders, isDriver, mode, loadOrders]);
 
   const chooseClient = async (clientSummary: IClientSummary) => {
@@ -294,7 +294,7 @@ export default function OrdersScreen() {
       setOrderError('Ingresá una fecha de entrega válida con formato AAAA-MM-DD.');
       return;
     }
-    const truckId = selectedTruckId == null ? undefined : Number(selectedTruckId);
+    const truckId = !canAssignOrdersToTruck || selectedTruckId == null ? undefined : Number(selectedTruckId);
     if (truckId != null && (!Number.isInteger(truckId) || truckId < 1)) {
       setOrderError('El camión seleccionado no tiene un ID válido del servidor.');
       return;
@@ -303,7 +303,7 @@ export default function OrdersScreen() {
     setOrderError(null);
     setSuccessMessage(null);
     try {
-      const assignedTruck = trucks.find(truck => truck.id === selectedTruckId);
+      const assignedTruck = canAssignOrdersToTruck ? trucks.find(truck => truck.id === selectedTruckId) : undefined;
       const created = await salesService.createOrder({ customerId, deliveryAddressId, items: orderItems, deliveryDate, ...(truckId ? { truckId } : {}) });
       clearCart();
       setSelectedClient(null);
@@ -562,9 +562,9 @@ export default function OrdersScreen() {
       </TouchableOpacity>
       {(order.status === 'PENDING' || order.status === 'IN_ROUTE') && (
         <View style={styles.orderActions}>
-          {order.status === 'PENDING' && <TouchableOpacity style={styles.secondaryAction} onPress={() => void updateStatus(order, 'route')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : 'Pasar a reparto'}</Text></TouchableOpacity>}
-          {order.status === 'IN_ROUTE' && <TouchableOpacity style={styles.secondaryAction} onPress={() => isDriver ? openDeliveryConfirmation(order) : void updateStatus(order, 'deliver')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : isDriver ? 'Registrar entrega y cobro' : 'Marcar entregado'}</Text></TouchableOpacity>}
-          {!isDriver && <TouchableOpacity style={styles.cancelAction} onPress={() => setCancelConfirmOrder(order)} disabled={updatingOrderId === order.id}>
+          {(isAdmin || isDriver) && order.status === 'PENDING' && <TouchableOpacity style={styles.secondaryAction} onPress={() => void updateStatus(order, 'route')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : isDriver ? 'Iniciar reparto' : 'Pasar a reparto'}</Text></TouchableOpacity>}
+          {order.status === 'IN_ROUTE' && (isDriver || isAdmin) && <TouchableOpacity style={styles.secondaryAction} onPress={() => isDriver ? openDeliveryConfirmation(order) : void updateStatus(order, 'deliver')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : isDriver ? 'Registrar entrega y cobro' : 'Marcar entregado'}</Text></TouchableOpacity>}
+          {isAdmin && <TouchableOpacity style={styles.cancelAction} onPress={() => setCancelConfirmOrder(order)} disabled={updatingOrderId === order.id}>
             <Text style={styles.cancelActionText}>{updatingOrderId === order.id ? 'Actualizando…' : 'Cancelar'}</Text>
           </TouchableOpacity>}
         </View>
@@ -578,12 +578,12 @@ export default function OrdersScreen() {
       <View style={styles.heading}>
         <View>
           <Text style={styles.eyebrow}>VENTAS</Text>
-          <Text style={styles.title}>{!isDriver && mode === 'new' ? 'Nuevo pedido' : 'Pedidos'}</Text>
+          <Text style={styles.title}>{canRegisterSale && !isDriver && mode === 'new' ? 'Nuevo pedido' : 'Pedidos'}</Text>
         </View>
-        <View style={styles.headingIcon}><Ionicons name={mode === 'new' ? 'receipt-outline' : 'reader-outline'} size={22} color={colors.primary} /></View>
+        <View style={styles.headingIcon}><Ionicons name={canRegisterSale && mode === 'new' ? 'receipt-outline' : 'reader-outline'} size={22} color={colors.primary} /></View>
       </View>
 
-      {!isDriver && <View style={styles.modeSwitch}>
+      {canRegisterSale && !isDriver && <View style={styles.modeSwitch}>
         <TouchableOpacity style={[styles.modeButton, mode === 'new' && styles.modeButtonActive]} onPress={() => setMode('new')}>
           <Text style={[styles.modeText, mode === 'new' && styles.modeTextActive]}>Armar pedido{items.length ? ` · ${items.length}` : ''}</Text>
         </TouchableOpacity>
@@ -592,7 +592,7 @@ export default function OrdersScreen() {
         </TouchableOpacity>
       </View>}
 
-      {isDriver || mode === 'history' ? (
+      {isDriver || !canRegisterSale || mode === 'history' ? (
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
             <View><Text style={styles.sectionTitle}>Actividad reciente</Text><Text style={styles.sectionHint}>Seguimiento de pedidos del backend</Text></View>
@@ -646,9 +646,11 @@ export default function OrdersScreen() {
           </View>
 
           <View style={styles.section}>
-            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Entrega y camión</Text><Text style={styles.sectionHint}>Asigná el pedido a un camión y a su chofer</Text></View><TouchableOpacity onPress={() => void loadTrucks()} disabled={loadingTrucks} accessibilityLabel="Actualizar camiones"><Ionicons name="refresh-outline" size={18} color={colors.primary} /></TouchableOpacity></View>
+            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Fecha de entrega</Text><Text style={styles.sectionHint}>Indicá cuándo debe entregarse el pedido</Text></View></View>
             <Text style={styles.dateLabel}>Fecha de entrega</Text>
             <TextInput value={deliveryDate} onChangeText={value => { setDeliveryDate(value); setOrderError(null); }} style={styles.deliveryDateInput} placeholder="AAAA-MM-DD" maxLength={10} editable={!submitting} />
+            {canAssignOrdersToTruck && <>
+            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>5. Camión</Text><Text style={styles.sectionHint}>Podés dejarlo sin asignar</Text></View><TouchableOpacity onPress={() => void loadTrucks()} disabled={loadingTrucks} accessibilityLabel="Actualizar camiones"><Ionicons name="refresh-outline" size={18} color={colors.primary} /></TouchableOpacity></View>
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} />}
             {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? (
@@ -663,6 +665,7 @@ export default function OrdersScreen() {
                 </TouchableOpacity>)}
               </View>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
+            </>}
           </View>
 
           <View style={styles.footer}>
@@ -743,7 +746,7 @@ export default function OrdersScreen() {
               </View>}
               <View style={styles.detailTotalRow}><Text style={styles.detailTotalLabel}>Total informado</Text><Text style={styles.detailTotalAmount}>{money(detailOrder?.total ?? 0)}</Text></View>
             </ScrollView> : null}
-            {detail && detailOrder?.status === 'PENDING' && !isDriver && <View style={styles.detailFooter}>
+            {detail && detailOrder?.status === 'PENDING' && isAdmin && <View style={styles.detailFooter}>
               {editingDetail ? <>
                 <TouchableOpacity style={styles.confirmBack} onPress={() => { setEditingDetail(false); setDetailError(null); }} disabled={savingEdit}><Text style={styles.confirmBackText}>Cancelar</Text></TouchableOpacity>
                 <TouchableOpacity style={styles.deliveryConfirmButton} onPress={() => void saveOrderEdit()} disabled={savingEdit}>{savingEdit ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.deliveryConfirmText}>Guardar cambios</Text>}</TouchableOpacity>

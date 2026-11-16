@@ -11,27 +11,35 @@ export function usePermissions() {
   const isManager = role === 'manager' || /manager|gerent|encarg/.test(roleName);
   const isSeller = role === 'seller' || /seller|sales|vendedor|venta/.test(roleName);
   const isDelivery = role === 'delivery' || /delivery|driver|chofer|repart/.test(roleName);
+  const isDepot = role === 'depot' || /depot|deposito|warehouse|almacen/.test(roleName);
   const isAdmin = isOwner || isManager;
   // When the backend supplies explicit roles, use a consistent UI policy even
   // if its permissions array is empty or incomplete. Keep permission-based
   // behavior for legacy/unknown profiles.
   const allowed = (permission: string, roles: string[]) =>
-    isAdmin || roles.includes(role) || (role === 'unknown' && hasPermission(permission));
+    isAdmin || roles.includes(role) ||
+    (roles.includes('seller') && isSeller) ||
+    (roles.includes('delivery') && isDelivery) ||
+    (roles.includes('depot') && isDepot) ||
+    (role === 'unknown' && hasPermission(permission));
   return {
     canViewCatalog:     allowed(PERMISSIONS.VIEW_CATALOG, ['seller']),
     canManageProducts:  allowed(PERMISSIONS.MANAGE_PRODUCTS, []),
-    canManageCategories: allowed(PERMISSIONS.MANAGE_CATEGORIES, ['seller']),
+    canViewCategories:  allowed(PERMISSIONS.MANAGE_CATEGORIES, ['seller']),
+    canManageCategories: allowed(PERMISSIONS.MANAGE_CATEGORIES, []),
     canManageCategoryStatus: isAdmin || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_CATEGORIES)),
     canManageCart:      allowed(PERMISSIONS.MANAGE_CART, ['seller']),
     canRegisterSale:    allowed(PERMISSIONS.REGISTER_SALE, ['seller']),
-    canViewOrders:      allowed(PERMISSIONS.VIEW_ORDERS, ['seller', 'delivery']),
+    canViewOrders:      allowed(PERMISSIONS.VIEW_ORDERS, ['seller', 'delivery', 'depot']),
     canViewStock:       allowed(PERMISSIONS.VIEW_STOCK, []),
     canManageStock:     allowed(PERMISSIONS.MANAGE_STOCK, []),
     canViewClients:     allowed(PERMISSIONS.VIEW_CLIENTS, ['seller']),
     canManageClients:   allowed(PERMISSIONS.MANAGE_CLIENTS, ['seller']),
-    canViewLogistics:   allowed(PERMISSIONS.VIEW_LOGISTICS, ['delivery']),
+    canViewLogistics:   allowed(PERMISSIONS.VIEW_LOGISTICS, ['delivery', 'depot']),
     canManageLogistics: allowed(PERMISSIONS.MANAGE_LOGISTICS, []),
-    canAssignOrdersToTruck: allowed(PERMISSIONS.VIEW_ORDERS, ['seller']),
+    canAssignOrdersToTruck: isAdmin || isDepot || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_LOGISTICS)),
+    canAssignTruckToDriver: isAdmin || isDepot || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_LOGISTICS)),
+    canLoadTruckStock: isAdmin || isDepot || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_STOCK)),
     canViewReports:     allowed(PERMISSIONS.VIEW_REPORTS, []),
     canManageUsers:     isOwner || isManager || (role === 'unknown' && hasPermission(PERMISSIONS.MANAGE_USERS)),
     role,
@@ -39,6 +47,7 @@ export function usePermissions() {
     isManager,
     isSeller,
     isDelivery,
+    isDepot,
     isAdmin,
   };
 }

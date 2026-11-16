@@ -50,6 +50,7 @@ function mapRole(roleName?: string, permissions: string[] = []): IUser['role'] {
   if (/manager|gerent|encarg/.test(normalized)) return 'manager';
   if (/seller|sales|vendedor|venta/.test(normalized)) return 'seller';
   if (/delivery|driver|chofer|repart/.test(normalized)) return 'delivery';
+  if (/depot|deposito|warehouse|almacen/.test(normalized)) return 'depot';
   // En el backend incluido, solo OWNER y ADMIN reciben users:manage.
   // Esto permite reconocer el rol aunque /auth/me no incluya roleName.
   if (permissions.includes('users:manage')) return 'owner';
