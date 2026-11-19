@@ -14,6 +14,7 @@ import {
   View,
 } from "react-native";
 import { useCategories } from "../../../hooks";
+import { usePermissions } from "../../../hooks/usePermissions";
 import { productsService } from "../../../services/api/productsService";
 import { useCartStore } from "../../../store/cartStore";
 import { colors, radius, spacing, typography } from "../../../theme";
@@ -21,6 +22,8 @@ import { IProduct } from "../../../types/api.types";
 
 export default function CatalogScreen() {
   const router = useRouter();
+  const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
+  useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
   // Categorías: conectadas al backend real (endpoint /category/get).
   // Se muestra el error real (en vez de confundirlo con "no hay categorías")
@@ -30,7 +33,7 @@ export default function CatalogScreen() {
     loading: loadingCategories,
     error: categoriesError,
     refetch: refetchCategories,
-  } = useCategories();
+  } = useCategories(canViewCatalog);
 
   // Listado de productos conectado al backend.
   const [products, setProducts] = useState<IProduct[]>([]);
@@ -59,6 +62,7 @@ export default function CatalogScreen() {
   // Cargar productos cada vez que cambia el buscador o el filtro aplicado
   useEffect(() => {
     const fetchCatalog = async () => {
+      if (!canViewCatalog) return;
       setLoading(true);
       setError(null);
       try {
@@ -82,7 +86,7 @@ export default function CatalogScreen() {
 
     return () => clearTimeout(delayDebounce);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [search, appliedCategoryIds.join(","), categories, reloadKey]);
+    }, [canViewCatalog, search, appliedCategoryIds.join(","), categories, reloadKey]);
 
   function toggleCategory(categoryId: string) {
     setAppliedCategoryIds((prev) =>
@@ -124,13 +128,13 @@ export default function CatalogScreen() {
             <Ionicons name="cube-outline" size={17} color={colors.primary} />
             <Text style={styles.manageCategoriesText}>Productos</Text>
           </TouchableOpacity>
-          <TouchableOpacity
+          {canManageCategories && <TouchableOpacity
             style={styles.manageCategoriesButton}
             onPress={() => router.push("/(tabs)/catalog/categories" as any)}
           >
             <Ionicons name="pricetags-outline" size={17} color={colors.primary} />
             <Text style={styles.manageCategoriesText}>Categorías</Text>
-          </TouchableOpacity>
+          </TouchableOpacity>}
         </View>
       </View>
 

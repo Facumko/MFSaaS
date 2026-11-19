@@ -22,16 +22,8 @@ export interface TruckStockItem {
   quantityReturned: number;
 }
 
-export interface TruckStockCreateRequest {
-  productId: number;
-  deliveryDate: string;
-  quantityLoaded: number;
-}
-
-export interface TruckStockUpdateRequest {
-  quantityLoaded: number;
-  quantityReturned: number;
-}
+export interface TruckStockCreateRequest { productId: number; deliveryDate: string; quantityLoaded: number }
+export interface TruckStockUpdateRequest { quantityLoaded: number; quantityReturned: number }
 
 type RawObject = Record<string, any>;
 
@@ -53,18 +45,19 @@ function unwrapOne(payload: unknown): RawObject {
 }
 
 function toTruck(dto: RawObject): Truck {
+  const driver = dto.driver && typeof dto.driver === 'object' ? dto.driver as RawObject : {};
   const active = dto.active ?? dto.isActive ?? true;
   return {
     id: String(dto.id ?? dto.truckId ?? ''),
     licensePlate: String(dto.licensePlate ?? dto.plate ?? ''),
-    driverId: dto.driverId == null ? undefined : String(dto.driverId),
-    driverName: dto.driverName == null ? undefined : String(dto.driverName),
+    driverId: dto.driverId == null && driver.id == null ? undefined : String(dto.driverId ?? driver.id),
+    driverName: String(dto.driverName ?? driver.fullName ?? driver.name ?? dto.userName ?? '') || undefined,
     active: active === true || active === 1 || active === 'true',
   };
 }
 
 function toStockItem(dto: RawObject): TruckStockItem {
-  const product = dto.product ?? {};
+  const product = dto.product && typeof dto.product === 'object' ? dto.product as RawObject : {};
   return {
     id: String(dto.id ?? dto.stockId ?? ''),
     productId: String(dto.productId ?? product.id ?? ''),
@@ -110,7 +103,6 @@ export const logisticsService = {
   async deleteTruck(id: string): Promise<void> {
     await client.delete(`/trucks/${id}`);
   },
-
   async getTruckStock(truckId: string, date?: string): Promise<TruckStockItem[]> {
     const response = await client.get<unknown>(`/trucks/${truckId}/stock`, { params: date ? { date } : undefined });
     return unwrapList(response.data, ['items', 'content', 'data', 'stock']).map(toStockItem);

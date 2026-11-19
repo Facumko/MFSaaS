@@ -16,10 +16,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { clientsService } from '../../../services/api/clientsService';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { IDebtor } from '../../../types';
+import { usePermissions } from '../../../hooks/usePermissions';
 
 export default function DebtorsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { canViewClients } = usePermissions();
 
   const [debtors, setDebtors] = useState<IDebtor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,8 +29,9 @@ export default function DebtorsScreen() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetchDebtors();
-  }, []);
+    if (!canViewClients) router.replace('/(tabs)/profile' as any);
+    else fetchDebtors();
+  }, [canViewClients, router]);
 
   const fetchDebtors = async () => {
     try {

@@ -1,15 +1,9 @@
-const dateFormatter = new Intl.DateTimeFormat('es-AR', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-});
-const dateTimeFormatter = new Intl.DateTimeFormat('es-AR', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-});
+const relativeTime = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
+
+function dateOrOriginal(iso: string): Date | null {
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 /** Formatea número como moneda argentina: 12500 → "$12.500" */
 export function formatCurrency(amount: number): string {
@@ -18,33 +12,30 @@ export function formatCurrency(amount: number): string {
 
 /** Formatea fecha ISO a formato legible: "15 jun 2026" */
 export function formatDate(iso: string): string {
-  return dateFormatter.format(new Date(iso));
+  const date = dateOrOriginal(iso);
+  return date ? date.toLocaleDateString('es-AR', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\.$/, '') : iso;
 }
 
 /** Formatea fecha ISO con hora: "15 jun 2026 · 14:30" */
 export function formatDateTime(iso: string): string {
-  return dateTimeFormatter.format(new Date(iso)).replace(',', ' ·');
+  const date = dateOrOriginal(iso);
+  if (!date) return iso;
+  const datePart = date.toLocaleDateString('es-AR', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\.$/, '');
+  const timePart = date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  return `${datePart} · ${timePart}`;
 }
 
 /** Tiempo relativo: "hace 2 horas" */
 export function fromNow(iso: string): string {
-  const elapsedSeconds = (new Date(iso).getTime() - Date.now()) / 1000;
-  const units: Array<[number, Intl.RelativeTimeFormatUnit]> = [
-    [60, 'second'],
-    [60, 'minute'],
-    [24, 'hour'],
-    [30, 'day'],
-    [12, 'month'],
-    [Number.POSITIVE_INFINITY, 'year'],
+  const date = dateOrOriginal(iso);
+  if (!date) return iso;
+  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ['year', 31_536_000], ['month', 2_592_000], ['week', 604_800],
+    ['day', 86_400], ['hour', 3_600], ['minute', 60], ['second', 1],
   ];
-  let value = elapsedSeconds;
-  for (const [limit, unit] of units) {
-    if (Math.abs(value) < limit) {
-      return new Intl.RelativeTimeFormat('es', { numeric: 'auto' }).format(Math.round(value), unit);
-    }
-    value /= limit;
-  }
-  return '';
+  const [unit, duration] = units.find(([, duration]) => Math.abs(seconds) >= duration) ?? ['second', 1];
+  return relativeTime.format(Math.round(seconds / duration), unit);
 }
 
 /** Formatea CUIT con guiones: "20123456781" → "20-12345678-1" */
