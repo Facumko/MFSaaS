@@ -7,6 +7,7 @@ import { PaginationControls, pageItems } from '../../../components/ui/Pagination
 import { DatePickerCalendar } from '../../../components/ui/DatePickerCalendar';
 import { reportsService, ReportGroupBy, SalesPeriodReport, TopSellingProductReport, EmployeePerformanceReport, DeliveryHistoryItem, SalesHistoryItem, DeliveryAttemptItem } from '../../../services/api/reportsService';
 import { salesService } from '../../../services/api/salesService';
+import { logisticsService } from '../../../services/api/logisticsService';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
@@ -79,6 +80,7 @@ export default function ReportsScreen() {
   const [salesHistory, setSalesHistory] = useState<SalesHistoryItem[]>([]);
   const [expandedDriverId, setExpandedDriverId] = useState<number | null>(null);
   const [deliveryAttempts, setDeliveryAttempts] = useState<Record<number, DeliveryAttemptItem[]>>({});
+  const [depotLoads, setDepotLoads] = useState<{ truckName: string; productName: string; loaded: number; returned: number }[]>([]);
   const [loadingAttempts, setLoadingAttempts] = useState(false);
 
   useEffect(() => { if (!canViewReports) router.replace('/(tabs)/catalog' as any); }, [canViewReports, router]);
@@ -132,6 +134,9 @@ export default function ReportsScreen() {
       setSalesHistory(salesEntries);
       setExpandedDriverId(null);
       setDeliveryAttempts({});
+      const trucks = await logisticsService.getTrucks().catch(() => []);
+      const stockByTruck = await Promise.all(trucks.map(async truck => ({ truck, stock: await logisticsService.getTruckStock(truck.id, movementDate).catch(() => []) })));
+      setDepotLoads(stockByTruck.flatMap(({ truck, stock }) => stock.filter(item => (item.deliveryDate || movementDate).slice(0, 10) === movementDate).map(item => ({ truckName: truck.licensePlate || `Camión #${truck.id}`, productName: item.productName, loaded: item.quantityLoaded, returned: item.quantityReturned }))));
     } catch (cause) {
       setMovementError(parseApiError(cause, 'No se pudieron cargar los movimientos de reparto.').message);
     } finally { setMovementLoading(false); }
@@ -268,6 +273,10 @@ export default function ReportsScreen() {
           </View>;
         }) : <EmptyState text="No hay movimientos de reparto para este día." />}
         <PaginationControls page={movementPage} totalItems={driverMovements.length} onPageChange={setMovementPage} />
+        <View style={styles.card}>
+          <View style={styles.reportHeader}><View style={styles.reportIcon}><Ionicons name="file-tray-stacked-outline" size={20} color={colors.primary} /></View><View style={styles.reportTitleWrap}><Text style={styles.cardTitle}>Depósito · Stock por camión</Text><Text style={styles.reportSubtitle}>Cargas y devoluciones del día · {formatDate(movementDate)}</Text></View></View>
+          {movementLoading ? <SectionLoading /> : depotLoads.length ? depotLoads.map((load, index) => <DataRow key={`${load.truckName}-${load.productName}-${index}`} title={`${load.truckName} · ${load.productName}`} detail={`Cargado ${load.loaded} · Devuelto ${load.returned}`} value={`Disponible ${Math.max(0, load.loaded - load.returned)}`} />) : <EmptyState text="No hay stock registrado para los camiones en esta fecha." />}
+        </View>
         <DatePickerCalendar visible={movementCalendarOpen} value={movementDate} title="Día de movimientos" onSelect={date => { setMovementDate(date); setMovementPage(1); }} onClose={() => setMovementCalendarOpen(false)} />
       </>}
     </ScrollView>

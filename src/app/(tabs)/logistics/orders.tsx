@@ -9,6 +9,7 @@ import { logisticsService, Truck } from '../../../services/api/logisticsService'
 import { clientsService } from '../../../services/api/clientsService';
 import { ApiOrderStatus, OrderListItem, salesService } from '../../../services/api/salesService';
 import { useAuthStore } from '../../../store/authStore';
+import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
 import { formatDate } from '../../../utils/formatters';
@@ -19,6 +20,7 @@ const money = (amount: number) => `$${amount.toLocaleString('es-AR')}`;
 export default function AssignOrdersScreen() {
   const router = useRouter();
   const user = useAuthStore(state => state.user);
+  const { isDepot } = usePermissions();
   const isDriver = user?.role === 'delivery' || /delivery|driver|chofer|repart/i.test(user?.roleName ?? '');
   useEffect(() => { if (isDriver) router.replace('/(tabs)/logistics' as any); }, [isDriver, router]);
   const [orders, setOrders] = useState<OrderListItem[]>([]);
@@ -29,8 +31,9 @@ export default function AssignOrdersScreen() {
   const [selectedOrder, setSelectedOrder] = useState<OrderListItem | null>(null);
   const [localAssignments, setLocalAssignments] = useState<Record<string, string>>({});
   const [truckSearch, setTruckSearch] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const todayDate = new Date().toLocaleDateString('en-CA');
+  const [dateFrom, setDateFrom] = useState(todayDate);
+  const [dateTo, setDateTo] = useState(todayDate);
   const [datePicker, setDatePicker] = useState<'from' | 'to' | null>(null);
   const [clientSearch, setClientSearch] = useState('');
   const [ordersPage, setOrdersPage] = useState(1);
@@ -54,7 +57,7 @@ export default function AssignOrdersScreen() {
       const assignedId = localAssignments[order.id] ?? order.truckId;
       return (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo) &&
         (!customer || normalize(order.customerName).startsWith(customer)) &&
-        order.status === 'PENDING' && !assignedId;
+        order.status === 'PENDING';
     });
   }, [orders, localAssignments, dateFrom, dateTo, clientSearch]);
   const pageOrders = useMemo(() => pageItems(visibleOrders, ordersPage), [visibleOrders, ordersPage]);
@@ -75,7 +78,7 @@ export default function AssignOrdersScreen() {
       const clientPages = await Promise.all(Array.from({ length: Math.ceil(firstClientPage.total / 10) - 1 }, (_, index) => clientsService.getClients('', index + 2)));
       const customerNames = new Map<string, string>([firstClientPage, ...clientPages].flatMap(page => page.items).map(client => [client.id, client.businessName] as const));
       const completeOrders = orderList.map(order => ({ ...order, customerName: (order.customerName && order.customerName !== 'Cliente' ? order.customerName : customerNames.get(order.customerId ?? '') || 'Cliente sin identificar') }));
-      setOrders(completeOrders); setTrucks(truckList.filter(truck => Boolean(truck.driverId || truck.driverName)));
+      setOrders(completeOrders); setTrucks(truckList.filter(truck => Boolean(truck.driverId)));
     } catch (err) { setError(parseApiError(err, 'No se pudieron cargar pedidos y camiones.').message); }
     finally { setLoading(false); }
   }, [user?.role]);
@@ -99,9 +102,9 @@ export default function AssignOrdersScreen() {
   };
 
   return <View style={styles.screen}>
-    <View style={styles.header}><TouchableOpacity onPress={() => router.replace('/(tabs)/logistics' as any)} accessibilityLabel="Volver a camiones"><Ionicons name="chevron-back" size={24} color={colors.textPrimary} /></TouchableOpacity><View style={styles.headerTitleWrap}><Text style={styles.eyebrow}>LOGÍSTICA</Text><Text style={styles.title}>Asignar pedidos</Text></View><TouchableOpacity onPress={() => void load()}><Ionicons name="refresh" size={20} color={colors.primary} /></TouchableOpacity></View>
-    <View style={styles.pageIntro}><Text style={styles.pageDescription}>Revisá los pedidos pendientes y elegí el camión de reparto.</Text></View>
-    <View style={styles.historyFilters}><View style={styles.filterDates}><TouchableOpacity style={styles.dateFilterButton} onPress={() => setDatePicker('from')}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateFilterText}>{dateFrom ? `Desde ${formatDate(dateFrom)}` : 'Fecha desde'}</Text></TouchableOpacity><TouchableOpacity style={styles.dateFilterButton} onPress={() => setDatePicker('to')}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateFilterText}>{dateTo ? `Hasta ${formatDate(dateTo)}` : 'Fecha hasta'}</Text></TouchableOpacity></View><TextInput style={styles.filterInput} value={clientSearch} onChangeText={setClientSearch} placeholder="Buscar por cliente" placeholderTextColor={colors.textSecondary} maxLength={40} /></View>
+    <View style={styles.header}>{!isDepot && <TouchableOpacity onPress={() => router.replace('/(tabs)/logistics' as any)} accessibilityLabel="Volver a camiones"><Ionicons name="chevron-back" size={24} color={colors.textPrimary} /></TouchableOpacity>}<View style={styles.headerTitleWrap}><Text style={styles.eyebrow}>{isDepot ? 'DEPÓSITO' : 'LOGÍSTICA'}</Text><Text style={styles.title}>{isDepot ? 'Pedidos de hoy' : 'Asignar pedidos'}</Text></View><TouchableOpacity onPress={() => void load()}><Ionicons name="refresh" size={20} color={colors.primary} /></TouchableOpacity></View>
+    <View style={styles.pageIntro}><Text style={styles.pageDescription}>{isDepot ? 'Pedidos pendientes con entrega para hoy. Asignalos a un camión con chofer.' : 'Revisá los pedidos pendientes y elegí el camión de reparto.'}</Text></View>
+    <View style={styles.historyFilters}>{isDepot ? <Text style={styles.pageDescription}>Entrega: hoy · {formatDate(todayDate)}</Text> : <View style={styles.filterDates}><TouchableOpacity style={styles.dateFilterButton} onPress={() => setDatePicker('from')}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateFilterText}>{dateFrom ? `Desde ${formatDate(dateFrom)}` : 'Fecha desde'}</Text></TouchableOpacity><TouchableOpacity style={styles.dateFilterButton} onPress={() => setDatePicker('to')}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateFilterText}>{dateTo ? `Hasta ${formatDate(dateTo)}` : 'Fecha hasta'}</Text></TouchableOpacity></View>}<TextInput style={styles.filterInput} value={clientSearch} onChangeText={setClientSearch} placeholder="Buscar por cliente" placeholderTextColor={colors.textSecondary} maxLength={40} /></View>
     {!!error && <View style={styles.banner}><FormErrorBanner message={error} onRetry={load} /></View>}
     {loading ? <View style={styles.center}><ActivityIndicator size="large" color={colors.primary} /></View> : <ScrollView contentContainerStyle={styles.list}>
       {pageOrders.map(order => {

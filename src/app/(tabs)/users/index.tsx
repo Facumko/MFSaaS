@@ -143,7 +143,7 @@ export default function UsersScreen() {
       <View style={styles.modalBackdrop}><View style={styles.modal}>
         <Text style={styles.modalTitle}>{pendingAction?.kind === 'delete' ? 'Eliminar usuario' : 'Desactivar usuario'}</Text>
         <Text style={styles.helper}>{pendingAction?.kind === 'delete' ? `Se eliminará ${pendingAction?.user.fullName}. Esta acción no se puede deshacer.` : `¿Querés desactivar a ${pendingAction?.user.fullName}?`}</Text>
-        {!!error && <FormErrorBanner message={error} />}
+        {!!error && <FormErrorBanner message={error} onRetry={() => void load()} />}
         <View style={styles.modalActions}><TouchableOpacity style={styles.cancelButton} onPress={() => setPendingAction(null)} disabled={saving}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity><TouchableOpacity style={[styles.saveButton, { backgroundColor: colors.error }]} onPress={() => void confirmUserAction()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.saveText}>{pendingAction?.kind === 'delete' ? 'Eliminar' : 'Desactivar'}</Text>}</TouchableOpacity></View>
       </View></View>
     </Modal>

@@ -187,11 +187,19 @@ export default function LogisticsScreen() {
     return [...totals.values()].sort((a, b) => a.productName.localeCompare(b.productName));
   }, [driverCancellationReasons, driverDeliveryAttempts, driverToday, truckOrders]);
   const pageLoadedOrderProducts = useMemo(() => pageItems(loadedOrderProducts, driverLoadedProductPage), [driverLoadedProductPage, loadedOrderProducts]);
+  const freeTruckProducts = useMemo(() => {
+    const reserved = new Map<string, number>();
+    for (const order of truckOrders.filter(order => ['PENDING', 'IN_ROUTE'].includes(order.status) && (order.deliveryDate || order.createdAt).slice(0, 10) === driverToday)) {
+      for (const item of order.items ?? []) reserved.set(item.productId, (reserved.get(item.productId) ?? 0) + item.quantity);
+    }
+    return truckStock.filter(item => !item.deliveryDate || item.deliveryDate.slice(0, 10) === driverToday).map(item => ({ ...item, freeQuantity: Math.max(0, item.quantityLoaded - item.quantityReturned - (reserved.get(item.productId) ?? 0)) })).filter(item => item.freeQuantity > 0);
+  }, [driverToday, truckOrders, truckStock]);
   const driverCashTotals = useMemo(() => truckOrders
     .filter(order => order.status === 'DELIVERED' && (order.deliveredAt || order.deliveryDate || order.createdAt).slice(0, 10) === driverToday)
     .reduce((totals, order) => ({ cash: totals.cash + (order.cashAmount ?? 0), transfer: totals.transfer + (order.transferAmount ?? 0) }), { cash: 0, transfer: 0 }), [driverToday, truckOrders]);
   useEffect(() => setTruckPage(1), [truckSearch, truckDriverFilter]);
   useEffect(() => { if (!canViewLogistics) router.replace('/(tabs)/catalog' as any); }, [canViewLogistics, router]);
+  useEffect(() => { if (isDepot && !isDriver) router.replace('/(tabs)/logistics/orders' as any); }, [isDepot, isDriver, router]);
   useEffect(() => {
     const timer = setInterval(() => setDriverToday(today()), 60_000);
     return () => clearInterval(timer);
@@ -288,6 +296,9 @@ export default function LogisticsScreen() {
     setSelectedTruck(assignedTruck);
     void loadTruckOrders(assignedTruck);
   }, [isDriver, trucks, user?.truckId, loadTruckOrders]);
+  useEffect(() => {
+    if (isDriver && selectedTruck) void loadTruckStock(selectedTruck);
+  }, [isDriver, selectedTruck, loadTruckStock]);
 
   const openDriverDelivery = (order: OrderListItem) => {
     setDriverDeliveryOrder(order);
@@ -489,7 +500,7 @@ export default function LogisticsScreen() {
       setProducts(result.items.filter(product => product.active));
       setProductPage(1);
     } catch (err) {
-      setError(parseApiError(err, 'No se pudieron cargar los productos.').message);
+      setError('No se pudieron cargar los productos. Revisá la conexión e intentá nuevamente.');
     } finally { setLoadingProducts(false); }
   };
 
@@ -509,7 +520,7 @@ export default function LogisticsScreen() {
       setSelectedProductId('');
       await loadStock(selectedTruck, stockDate);
     } catch (err) {
-      setError(parseApiError(err, 'No se pudo cargar el producto en el camión.').message);
+      setError('No se pudo registrar la carga. Revisá los datos y volvé a intentar.');
     } finally { setSaving(false); }
   };
 
@@ -536,7 +547,7 @@ export default function LogisticsScreen() {
       setEditingStock(null);
       if (truck) await loadStock(truck, stockDate);
     } catch (err) {
-      setError(parseApiError(err, 'No se pudo actualizar el stock.').message);
+      setError('No se pudo actualizar la carga o devolución. Volvé a intentar.');
     } finally { setSaving(false); }
   };
   const confirmDelete = async () => {
@@ -555,7 +566,7 @@ export default function LogisticsScreen() {
       }
       setDeleteTarget(null);
     } catch (err) {
-      setError(parseApiError(err, 'No se pudo cambiar el estado del camión.').message);
+      setError('No se pudo completar el cambio. Revisá la conexión e intentá nuevamente.');
     } finally { setSaving(false); }
   };
 
@@ -580,6 +591,7 @@ export default function LogisticsScreen() {
             {driverTab === 'products' ? <View>
               <Text style={styles.driverSectionNote}>Carga de hoy · {driverToday}</Text>
               {pageLoadedOrderProducts.map(product => <View key={product.productId} style={styles.driverLoadedProduct}><View style={styles.driverLoadedProductCopy}><Text style={styles.driverCustomerName}>{product.productName}</Text>{!!product.unit && <Text style={styles.driverDetailText}>{product.unit}</Text>}{product.notDeliveredQuantity > 0 && <Text style={styles.driverLoadedStatus}>{product.notDeliveredQuantity} {product.unit || 'unidades'} no entregado{product.notDeliveredReason ? ` · ${product.notDeliveredReason}` : ''}</Text>}</View><Text style={styles.driverLoadedQuantity}>× {product.quantity}</Text></View>)}
+              {!!freeTruckProducts.length && <><Text style={styles.driverSectionNote}>Productos libres para venta</Text>{freeTruckProducts.map(product => <View key={`free-${product.id}`} style={styles.driverLoadedProduct}><View style={styles.driverLoadedProductCopy}><Text style={styles.driverCustomerName}>{product.productName}</Text><Text style={styles.driverDetailText}>Sin pedido</Text></View><Text style={styles.driverLoadedQuantity}>× {product.freeQuantity}</Text></View>)}</>}
               <PaginationControls page={driverLoadedProductPage} totalItems={loadedOrderProducts.length} onPageChange={setDriverLoadedProductPage} />
               {!loadedOrderProducts.length && <View style={styles.driverEmpty}><Ionicons name="cube-outline" size={30} color={colors.textSecondary} /><Text style={styles.emptyTitle}>No hay productos cargados hoy</Text><Text style={styles.emptyText}>Se suman los productos de los pedidos pendientes con entrega para hoy.</Text></View>}
             </View> : <>
@@ -702,13 +714,13 @@ export default function LogisticsScreen() {
       {selectedTruck && <View style={styles.stockSection}>
         <View style={styles.sectionHeader}>
           <View><Text style={styles.sectionTitle}>Stock de {selectedTruck.licensePlate}</Text><Text style={styles.sectionHint}>Cargado para la fecha seleccionada</Text></View>
-          {canManageLogistics && <TouchableOpacity style={styles.primarySmallButton} onPress={() => void openAddStock()}><Ionicons name="add" size={18} color={colors.textInverse} /><Text style={styles.primarySmallText}>Cargar</Text></TouchableOpacity>}
+          {canLoadTruckStock && <TouchableOpacity style={styles.primarySmallButton} onPress={() => void openAddStock()}><Ionicons name="add" size={18} color={colors.textInverse} /><Text style={styles.primarySmallText}>Cargar productos sueltos</Text></TouchableOpacity>}
         </View>
         <TouchableOpacity style={styles.dateCard} onPress={() => setStockDatePickerOpen(true)}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateCaption}>Fecha de reparto</Text><Text style={styles.dateInput}>{formatDate(stockDate)}</Text><Ionicons name="chevron-down" size={17} color={colors.primary} /></TouchableOpacity>
         <TouchableOpacity style={styles.refreshOrders} onPress={() => void loadStock(selectedTruck, stockDate)}><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.refreshText}>Actualizar stock</Text></TouchableOpacity>
         {loadingStock ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageStock.length ? pageStock.map(item => <View key={item.id} style={styles.stockCard}>
           <View style={styles.stockTop}><View style={styles.stockProductIcon}><Ionicons name="cube-outline" size={17} color={colors.primary} /></View><View style={styles.stockNameWrap}><Text style={styles.stockName}>{item.productName}</Text><Text style={styles.stockDate}>{formatDate(item.deliveryDate || stockDate)}</Text></View>
-            {canManageLogistics && <><TouchableOpacity onPress={() => openEditStock(item)} style={styles.iconButton}><Ionicons name="create-outline" size={18} color={colors.primary} /></TouchableOpacity><TouchableOpacity onPress={() => setDeleteTarget({ kind: 'stock', id: item.id, label: item.productName })} style={styles.iconButton}><Ionicons name="trash-outline" size={18} color={colors.error} /></TouchableOpacity></>}
+            {canLoadTruckStock && <><TouchableOpacity onPress={() => openEditStock(item)} style={styles.iconButton}><Ionicons name="create-outline" size={18} color={colors.primary} /></TouchableOpacity><TouchableOpacity onPress={() => setDeleteTarget({ kind: 'stock', id: item.id, label: item.productName })} style={styles.iconButton}><Ionicons name="trash-outline" size={18} color={colors.error} /></TouchableOpacity></>}
           </View>
           <View style={styles.stockStats}><Text style={styles.stockStat}>Cargado <Text style={styles.stockNumber}>{item.quantityLoaded}</Text></Text><Text style={styles.stockStat}>Devuelto <Text style={styles.stockNumber}>{item.quantityReturned}</Text></Text><Text style={styles.remainingStat}>Disponible <Text style={styles.remainingNumber}>{Math.max(0, item.quantityLoaded - item.quantityReturned)}</Text></Text></View>
         </View>) : <View style={styles.emptyTruckOrders}><Text style={styles.emptyText}>No hay carga registrada para este camión y fecha.</Text></View>}

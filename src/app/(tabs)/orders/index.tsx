@@ -931,6 +931,7 @@ export default function OrdersScreen() {
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Fecha de entrega</Text><Text style={styles.sectionHint}>Indicá cuándo debe entregarse el pedido</Text></View></View>
             <Text style={styles.dateLabel}>Fecha de entrega</Text>
             <TouchableOpacity style={styles.datePickerButton} onPress={() => setCalendarOpen(true)} disabled={submitting}><Ionicons name="calendar-outline" size={19} color={colors.primary} /><Text style={styles.datePickerValue}>{formatDate(deliveryDate)}</Text><Text style={styles.datePickerHint}>Seleccionar</Text><Ionicons name="chevron-down" size={18} color={colors.primary} /></TouchableOpacity>
+            {canAssignOrdersToTruck && <>
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} />}
             {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? (
@@ -939,6 +940,7 @@ export default function OrdersScreen() {
                 <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
               </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
+            </>}
           </View>
 
           <View style={styles.footer}>

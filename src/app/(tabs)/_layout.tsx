@@ -73,7 +73,7 @@ export default function TabsLayout() {
         name="logistics"
         options={{
           ...(permissions.canViewLogistics ? {} : hidden),
-          title: isDelivery ? "Mi camión" : "Camiones",
+          title: isDelivery ? "Mi camión" : permissions.isDepot ? "Pedidos depósito" : "Camiones",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="bus-outline" size={size} color={color} />
           ),
