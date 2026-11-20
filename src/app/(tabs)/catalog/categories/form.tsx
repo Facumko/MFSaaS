@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Switch,
@@ -15,6 +16,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FormErrorBanner } from '../../../../components/ui/FormErrorBanner';
+import { PaginationControls, pageItems } from '../../../../components/ui/PaginationControls';
 import { catalogService } from '../../../../services/api/catalogService';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../../theme';
@@ -31,8 +33,9 @@ export default function CategoryFormScreen() {
   const insets = useSafeAreaInsets();
   const { canManageCategories, canManageCategoryStatus } = usePermissions();
   useEffect(() => { if (!canManageCategories) router.replace('/(tabs)/catalog' as any); }, [canManageCategories, router]);
-  const { categoryId } = useLocalSearchParams<{ categoryId?: string }>();
-  const isEditMode = !!categoryId;
+  const { categoryId, newCategory } = useLocalSearchParams<{ categoryId?: string; newCategory?: string }>();
+  const goBack = () => router.replace('/(tabs)/catalog/categories' as any);
+  const isEditMode = !!categoryId && newCategory !== '1';
 
   const [loading, setLoading] = useState(isEditMode);
   // Antes, si este fetch fallaba, se mostraba un Alert y se hacía router.back()
@@ -46,6 +49,10 @@ export default function CategoryFormScreen() {
   const [categories, setCategories] = useState<ICategory[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [categoriesError, setCategoriesError] = useState<string | null>(null);
+  const [parentPickerOpen, setParentPickerOpen] = useState(false);
+  const [parentSearch, setParentSearch] = useState('');
+  const [parentPage, setParentPage] = useState(1);
+  const [subcategoryMode, setSubcategoryMode] = useState(false);
 
   // Estado activo/inactivo de la categoría (solo relevante en edición)
   const [isActive, setIsActive] = useState(true);
@@ -56,6 +63,7 @@ export default function CategoryFormScreen() {
     handleSubmit,
     reset,
     watch,
+    setValue,
     setError,
     clearErrors,
     setFocus,
@@ -68,14 +76,29 @@ export default function CategoryFormScreen() {
   });
 
   const selectedParentId = watch('parentCategoryId');
+  const normalizedName = (value: string) => value.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+  const parentOptions = categories.filter(category => (!isEditMode || category.id !== categoryId) && !category.parentCategoryId);
+  const visibleParentOptions = parentOptions.filter(category => normalizedName(category.name).startsWith(normalizedName(parentSearch)));
+  const pageParentOptions = pageItems(visibleParentOptions, parentPage);
+  useEffect(() => setParentPage(1), [parentSearch]);
+  const isSubcategory = subcategoryMode;
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     if (!canManageCategories) return;
-    loadCategories();
-    if (isEditMode && categoryId) {
-      loadCategory(categoryId);
+    setParentPickerOpen(false);
+    setParentSearch('');
+    setSubcategoryMode(false);
+    if (isEditMode && categoryId) void loadCategory(categoryId);
+    else {
+      reset({ name: '', parentCategoryId: '' });
+      clearErrors();
+      setServerError(null);
+      setIsActive(true);
     }
-  }, [categoryId, canManageCategories]);
+    void loadCategories();
+    // Form fields must reset each time the hidden route is opened for a new category.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManageCategories, categoryId, isEditMode]));
 
   const loadCategories = async () => {
     try {
@@ -99,6 +122,7 @@ export default function CategoryFormScreen() {
         name: category.name,
         parentCategoryId: category.parentCategoryId || '',
       });
+      setSubcategoryMode(!!category.parentCategoryId);
       const active = category.active !== false;
       setIsActive(active);
     } catch (err) {
@@ -129,6 +153,20 @@ export default function CategoryFormScreen() {
   };
 
   const onSubmit = async (data: CategoryFormData) => {
+    if (isSubcategory && !data.parentCategoryId) {
+      setServerError('Elegí la categoría principal de esta subcategoría.');
+      setParentPickerOpen(true);
+      return;
+    }
+    if (!isEditMode && (loadingCategories || categoriesError)) {
+      setServerError('Cargá las categorías existentes antes de crear una nueva.');
+      return;
+    }
+    const duplicate = categories.some(category => (!isEditMode || category.id !== categoryId) && normalizedName(category.name) === normalizedName(data.name));
+    if (duplicate) {
+      setError('name', { type: 'validate', message: 'Ya existe una categoría con ese nombre.' });
+      return;
+    }
     try {
       setSubmitting(true);
       setServerError(null);
@@ -145,7 +183,7 @@ export default function CategoryFormScreen() {
         await catalogService.createCategory(payload);
       }
 
-      router.back();
+      goBack();
     } catch (err) {
       const parsed = parseApiError(err, 'No se pudo guardar la categoría. Revisá los datos e intentá de nuevo.');
       if (parsed.fields.name) setError('name', { type: 'server', message: parsed.fields.name });
@@ -154,9 +192,6 @@ export default function CategoryFormScreen() {
       setSubmitting(false);
     }
   };
-
-  // Evita elegirse a sí misma como pri
-  const parentOptions = categories.filter(c => c.id !== categoryId);
 
   if (loading) {
     return (
@@ -170,7 +205,7 @@ export default function CategoryFormScreen() {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={goBack}>
             <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Editar categoría</Text>
@@ -194,7 +229,7 @@ export default function CategoryFormScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={goBack}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -249,7 +284,7 @@ export default function CategoryFormScreen() {
             <Controller
               control={control}
               name="name"
-              rules={{ required: 'El nombre es obligatorio.', validate: value => !!value.trim() || 'El nombre no puede estar vacío.', minLength: { value: 2, message: 'Usá al menos 2 caracteres.' }, maxLength: { value: 100, message: 'No puede superar 100 caracteres.' } }}
+              rules={{ required: 'El nombre es obligatorio.', validate: value => !!value.trim() || 'El nombre no puede estar vacío.', minLength: { value: 2, message: 'Usá al menos 2 caracteres.' }, maxLength: { value: 50, message: 'No puede superar 50 caracteres.' } }}
               render={({ field: { value, onChange, onBlur, ref } }) => (
                 <TextInput
                   ref={ref}
@@ -257,70 +292,44 @@ export default function CategoryFormScreen() {
                   placeholder="Ej: Carnes rojas"
                   placeholderTextColor={colors.textSecondary}
                   value={value}
-                  onChangeText={value => { onChange(value); setServerError(null); }}
+                  onChangeText={value => { if (value.length > 50) Alert.alert('Límite alcanzado', 'El nombre de la categoría admite hasta 50 caracteres.'); onChange(value.slice(0, 50)); setServerError(null); }}
                   onBlur={onBlur}
                   editable={!submitting}
-                  maxLength={100}
                 />
               )}
             />
             {errors.name && <Text style={styles.errorText}>{errors.name.message}</Text>}
           </View>
 
-          {/* Parent category selector */}
+          {/* Root/subcategory selection */}
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Categoría Principal (opcional)</Text>
+            <Text style={styles.label}>Tipo de categoría</Text>
+            <Text style={styles.helperText}>Elegí si será una categoría principal o una subcategoría.</Text>
+            <View style={styles.kindChoices}>
+              <TouchableOpacity style={[styles.kindChoice, !isSubcategory && styles.kindChoiceActive]} onPress={() => { setSubcategoryMode(false); setValue('parentCategoryId', '', { shouldDirty: true }); setParentPickerOpen(false); }} disabled={submitting}>
+                <Text style={[styles.kindChoiceText, !isSubcategory && styles.kindChoiceTextActive]}>Categoría principal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.kindChoice, isSubcategory && styles.kindChoiceActive]} onPress={() => { setSubcategoryMode(true); setParentPickerOpen(true); }} disabled={submitting}>
+                <Text style={[styles.kindChoiceText, isSubcategory && styles.kindChoiceTextActive]}>Subcategoría</Text>
+              </TouchableOpacity>
+            </View>
             {loadingCategories ? (
               <ActivityIndicator color={colors.primary} style={{ marginTop: spacing.sm }} />
             ) : categoriesError ? (
               <FormErrorBanner message={categoriesError} onRetry={loadCategories} />
-            ) : (
-              <Controller
-                control={control}
-                name="parentCategoryId"
-                render={({ field: { onChange } }) => (
-                  <View style={styles.chipsWrap}>
-                    <TouchableOpacity
-                      style={[styles.chip, selectedParentId === '' && styles.chipActive]}
-                      onPress={() => onChange('')}
-                      disabled={submitting}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          selectedParentId === '' && styles.chipTextActive,
-                        ]}
-                      >
-                        Sin Categoría principal
-                      </Text>
-                    </TouchableOpacity>
-                    {parentOptions.map(cat => (
-                      <TouchableOpacity
-                        key={cat.id}
-                        style={[
-                          styles.chip,
-                          selectedParentId === cat.id && styles.chipActive,
-                        ]}
-                        onPress={() => onChange(cat.id)}
-                        disabled={submitting}
-                      >
-                        <Text
-                          style={[
-                            styles.chipText,
-                            selectedParentId === cat.id && styles.chipTextActive,
-                          ]}
-                        >
-                          {cat.name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-              />
-            )}
-            <Text style={styles.helperText}>
-              Elegí una categoría padre si esta es una subcategoría.
-            </Text>
+            ) : isSubcategory && <View>
+              <TouchableOpacity style={styles.parentDropdown} onPress={() => setParentPickerOpen(open => !open)} disabled={submitting} accessibilityRole="button" accessibilityState={{ expanded: parentPickerOpen }}>
+                <Text style={styles.parentDropdownText}>{parentOptions.find(category => category.id === selectedParentId)?.name ?? 'Buscar categoría principal'}</Text>
+                <Ionicons name={parentPickerOpen ? 'chevron-up' : 'chevron-down'} size={19} color={colors.primary} />
+              </TouchableOpacity>
+              {parentPickerOpen && <View style={styles.parentPicker}>
+              <TextInput style={styles.input} value={parentSearch} onChangeText={setParentSearch} placeholder="Buscar categoría principal" placeholderTextColor={colors.textSecondary} maxLength={40} autoCorrect={false} />
+                <ScrollView style={styles.parentList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+                  {pageParentOptions.map(category => <TouchableOpacity key={category.id} style={styles.parentOption} onPress={() => { setValue('parentCategoryId', category.id, { shouldDirty: true }); setParentSearch(''); setParentPickerOpen(false); }}><Text style={styles.parentOptionText}>{category.name}</Text>{category.id === selectedParentId && <Ionicons name="checkmark" size={18} color={colors.primary} />}</TouchableOpacity>)}
+                  {!visibleParentOptions.length && <Text style={styles.helperText}>No hay categorías principales que coincidan.</Text>}
+                </ScrollView><PaginationControls page={parentPage} totalItems={visibleParentOptions.length} onPageChange={setParentPage} />
+              </View>}
+            </View>}
           </View>
 
           {!!serverError && <FormErrorBanner message={serverError} onRetry={() => handleSubmit(onSubmit)()} />}
@@ -332,7 +341,7 @@ export default function CategoryFormScreen() {
       <View style={styles.footer}>
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => router.back()}
+          onPress={goBack}
           disabled={submitting}
         >
           <Text style={styles.cancelButtonText}>Cancelar</Text>
@@ -465,6 +474,17 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginTop: spacing.xs,
   },
+  kindChoices: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  kindChoice: { flex: 1, alignItems: 'center', padding: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  kindChoiceActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  kindChoiceText: { ...typography.caption, color: colors.textSecondary, fontWeight: '600', textAlign: 'center' },
+  kindChoiceTextActive: { color: colors.primary },
+  parentDropdown: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  parentDropdownText: { ...typography.body, color: colors.textPrimary },
+  parentPicker: { padding: spacing.sm, marginTop: spacing.xs, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  parentList: { maxHeight: 190, marginTop: spacing.xs },
+  parentOption: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  parentOptionText: { ...typography.body, color: colors.textPrimary },
   chipsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',

@@ -24,36 +24,34 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   const isInactive = category.active === false;
 
   return (
-    <TouchableOpacity
+    <View
       style={[styles.container, isInactive && styles.containerInactive]}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      activeOpacity={0.7}
     >
-      <View style={styles.iconWrap}>
-        <Ionicons name="pricetag-outline" size={20} color={colors.primary} />
-      </View>
-      <View style={styles.content}>
-        <View style={styles.nameRow}>
-          <Text style={[styles.name, isInactive && styles.nameInactive]} numberOfLines={1}>
-            {category.name}
-          </Text>
-          {isInactive && (
-            <View style={styles.inactiveBadge}>
-              <Text style={styles.inactiveBadgeText}>Inactiva</Text>
-            </View>
+      <TouchableOpacity style={styles.mainAction} onPress={onPress} onLongPress={onLongPress} activeOpacity={0.7}>
+        <View style={styles.iconWrap}>
+          <Ionicons name="pricetag-outline" size={20} color={colors.primary} />
+        </View>
+        <View style={styles.content}>
+          <View style={styles.nameRow}>
+            <Text style={[styles.name, isInactive && styles.nameInactive]} numberOfLines={1}>
+              {category.name}
+            </Text>
+            {isInactive && (
+              <View style={styles.inactiveBadge}>
+                <Text style={styles.inactiveBadgeText}>Inactiva</Text>
+              </View>
+            )}
+          </View>
+          {parentName ? (
+            <Text style={styles.parent} numberOfLines={1}>Subcategoría de {parentName}</Text>
+          ) : (
+            <Text style={styles.parent}>Categoría principal</Text>
           )}
         </View>
-        {parentName ? (
-          <Text style={styles.parent} numberOfLines={1}>
-            Subcategoría de {parentName}
-          </Text>
-        ) : (
-          <Text style={styles.parent}>Categoría principal</Text>
-        )}
-      </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+      </TouchableOpacity>
 
-      {/* Toggle rápido de activo/inactivo, sin depender del long-press */}
+      {/* El control queda fuera del área táctil que abre el detalle. */}
       {onToggleActive &&
         (togglingActive ? (
           <ActivityIndicator color={colors.primary} style={styles.toggleSpace} />
@@ -67,8 +65,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
           />
         ))}
 
-      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
-    </TouchableOpacity>
+    </View>
   );
 };
 
@@ -85,6 +82,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     gap: spacing.md,
   },
+  mainAction: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   containerInactive: {
     backgroundColor: colors.background,
     opacity: 0.75,

@@ -26,6 +26,7 @@ function mapRole(roleName?: string): IUser['role'] {
   if (/manager|gerent|encarg/.test(normalized)) return 'manager';
   if (/seller|sales|vendedor|venta/.test(normalized)) return 'seller';
   if (/delivery|driver|chofer|repart/.test(normalized)) return 'delivery';
+  if (/warehouse|deposit|dep[oó]sito|almacen/.test(normalized)) return 'warehouse';
   return 'unknown';
 }
 

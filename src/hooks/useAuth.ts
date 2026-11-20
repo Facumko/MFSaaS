@@ -1,13 +1,23 @@
-import { useState } from 'react';
-import axios from 'axios';
-import { authService } from '../services/api/authService';
-import { removeRememberedSession, saveRememberedSession } from '../services/authSessionStorage';
-import { usersService } from '../services/api/usersService';
-import { useAuthStore } from '../store';
-import { parseApiError } from '../utils/apiErrors';
+import axios from "axios";
+import { useState } from "react";
+import { authService } from "../services/api/authService";
+import { usersService } from "../services/api/usersService";
+import {
+  removeRememberedSession,
+  saveRememberedSession,
+} from "../services/authSessionStorage";
+import { useAuthStore } from "../store";
+import { parseApiError } from "../utils/apiErrors";
 
 export function useAuth() {
-  const { setAuth, clearAuth, user, isAuthenticated, hasPermission, updateUser } = useAuthStore();
+  const {
+    setAuth,
+    clearAuth,
+    user,
+    isAuthenticated,
+    hasPermission,
+    updateUser,
+  } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -29,53 +39,67 @@ export function useAuth() {
         id: accountName,
         username: accountName,
         fullName: accountName,
-        role: 'unknown' as const,
+        role: "unknown" as const,
         permissions: [],
-        tenantId: '',
+        tenantId: "",
       };
-      setAuth(user, response.token, response.tokenType || 'Bearer');
+      setAuth(user, response.token, response.tokenType || "Bearer");
       try {
         const profile = await authService.getCurrentUser(accountName);
-        setAuth(profile, response.token, response.tokenType || 'Bearer');
+        setAuth(profile, response.token, response.tokenType || "Bearer");
       } catch (profileError) {
-        if (axios.isAxiosError(profileError) && profileError.response?.status === 401) {
+        if (
+          axios.isAxiosError(profileError) &&
+          profileError.response?.status === 401
+        ) {
           clearAuth();
-          throw new Error('El servidor emitió un token que no pudo validar al consultar el perfil. Revisá la autenticación del backend.');
+          throw new Error(
+            "El servidor emitió un token que no pudo validar al consultar el perfil. Revisá la autenticación del backend.",
+          );
         }
         // A successful login remains usable if the optional profile endpoint is temporarily unavailable.
-        console.warn('No se pudo cargar el perfil del backend', profileError);
+        console.warn("No se pudo cargar el perfil del backend", profileError);
       }
       try {
         if (rememberMe) {
           await saveRememberedSession({
             username: accountName,
             token: response.token,
-            tokenType: response.tokenType || 'Bearer',
+            tokenType: response.tokenType || "Bearer",
           });
         } else {
           await removeRememberedSession();
         }
       } catch (storageError) {
         // A storage issue must not turn a successful server login into a failed login.
-        console.warn('No se pudo actualizar la sesión recordada', storageError);
+        console.warn("No se pudo actualizar la sesión recordada", storageError);
       }
     } catch (e: any) {
-      const parsed = parseApiError(e, '');
+      const parsed = parseApiError(e, "");
       setFieldErrors(parsed.fields);
       const status = e?.response?.status;
       if (axios.isAxiosError(e) && !e.response) {
-        setError('No se pudo conectar con el servidor');
+        setError("No se pudo conectar con el servidor");
       } else if (status === 401) {
         const backendMessage = e?.response?.data?.message;
-        if (typeof backendMessage === 'string' && /authentication is required or invalid/i.test(backendMessage)) {
-          setError('El backend rechazó la solicitud de login. Revisen que el filtro JWT deje pasar esta ruta y que el matcher coincida con la ruta real (/auth/login o /api/auth/login).');
+        if (
+          typeof backendMessage === "string" &&
+          /authentication is required or invalid/i.test(backendMessage)
+        ) {
+          setError("Contraseña incorrecta.");
         } else {
-          setError(typeof backendMessage === 'string' ? backendMessage : 'Email o contraseña incorrectos');
+          setError(
+            typeof backendMessage === "string"
+              ? backendMessage
+              : "Email o contraseña incorrectos",
+          );
         }
       } else if (status === 403) {
-        setError('El usuario no tiene permiso para iniciar sesión');
+        setError("El usuario no tiene permiso para iniciar sesión");
       } else {
-        setError(e?.response?.data?.message || e.message || 'Error al iniciar sesión');
+        setError(
+          e?.response?.data?.message || e.message || "Error al iniciar sesión",
+        );
       }
     } finally {
       setIsLoading(false);
@@ -87,18 +111,21 @@ export function useAuth() {
       if (isAuthenticated) await authService.logout();
     } catch (logoutError) {
       // Always clear the local session, even if the server cannot be reached.
-      console.warn('No se pudo invalidar la sesión en el backend', logoutError);
+      console.warn("No se pudo invalidar la sesión.", logoutError);
     } finally {
       clearAuth();
     }
     try {
       await removeRememberedSession();
     } catch (storageError) {
-      console.warn('No se pudo borrar la sesión guardada', storageError);
+      console.warn("No se pudo borrar la sesión guardada", storageError);
     }
   }
 
-  async function editProfile(changes: { fullName?: string; username?: string }) {
+  async function editProfile(changes: {
+    fullName?: string;
+    username?: string;
+  }) {
     if (!user) return;
     setIsLoading(true);
     setError(null);
@@ -121,7 +148,7 @@ export function useAuth() {
       updateUser(userChanges);
       return userChanges;
     } catch (e: any) {
-      const parsed = parseApiError(e, 'Error al actualizar el perfil.');
+      const parsed = parseApiError(e, "Error al actualizar el perfil.");
       setFieldErrors(parsed.fields);
       if (!Object.keys(parsed.fields).length) setError(parsed.message);
       throw e;
@@ -130,5 +157,16 @@ export function useAuth() {
     }
   }
 
-  return { login, logout, editProfile, user, isAuthenticated, isLoading, error, fieldErrors, clearError, hasPermission };
+  return {
+    login,
+    logout,
+    editProfile,
+    user,
+    isAuthenticated,
+    isLoading,
+    error,
+    fieldErrors,
+    clearError,
+    hasPermission,
+  };
 }

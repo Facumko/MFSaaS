@@ -58,7 +58,6 @@ export default function TabsLayout() {
         name="catalog/products/form"
         options={{ href: null }}
       />
-
       <Tabs.Screen
         name="orders/index"
         options={{
@@ -70,7 +69,7 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="logistics/index"
+        name="logistics"
         options={{
           ...(permissions.canViewLogistics ? {} : hidden),
           title: "Camiones",
@@ -86,6 +85,17 @@ export default function TabsLayout() {
           title: "Clientes",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="people-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="reports/index"
+        options={{
+          ...(permissions.canViewReports ? {} : hidden),
+          title: "Reportes",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="analytics-outline" size={size} color={color} />
           ),
         }}
       />
@@ -116,10 +126,6 @@ export default function TabsLayout() {
       />
       <Tabs.Screen name="clients/ledger" options={{ href: null }} />
       <Tabs.Screen name="users/index" options={{ href: null }} />
-      <Tabs.Screen
-        name="reports/index"
-        options={{ href: null }}
-      />
     </Tabs>
   );
 }

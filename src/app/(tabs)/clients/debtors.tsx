@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
     ActivityIndicator,
     RefreshControl,
@@ -14,6 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { clientsService } from '../../../services/api/clientsService';
+import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { IDebtor } from '../../../types';
 import { usePermissions } from '../../../hooks/usePermissions';
@@ -27,13 +29,9 @@ export default function DebtorsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    if (!canViewClients) router.replace('/(tabs)/profile' as any);
-    else fetchDebtors();
-  }, [canViewClients, router]);
-
-  const fetchDebtors = async () => {
+  const fetchDebtors = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -44,7 +42,12 @@ export default function DebtorsScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (!canViewClients) router.replace('/(tabs)/profile' as any);
+    else void fetchDebtors();
+  }, [canViewClients, router, fetchDebtors]));
 
   const handleDebtorPress = (debtorId: string) => {
     router.push({
@@ -62,6 +65,8 @@ export default function DebtorsScreen() {
       client.taxId.startsWith(query),
     );
   }, [debtors, search]);
+  const pagedDebtors = useMemo(() => pageItems(visibleDebtors, page), [visibleDebtors, page]);
+  React.useEffect(() => setPage(1), [search]);
 
   const renderDebtorItem = ({ item }: { item: IDebtor }) => (
     <TouchableOpacity
@@ -112,7 +117,7 @@ export default function DebtorsScreen() {
     return (
       <View style={styles.emptyContainer}>
         <Ionicons name="checkmark-circle" size={48} color={colors.success} />
-        <Text style={styles.emptyTitle}>No hay deudores pendientes 🎉</Text>
+        <Text style={styles.emptyTitle}>No hay deudores pendientes</Text>
         <Text style={styles.emptyMessage}>
           Todos los clientes están al día con sus pagos
         </Text>
@@ -124,7 +129,7 @@ export default function DebtorsScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/clients' as any)}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Deudores</Text>
@@ -152,7 +157,7 @@ export default function DebtorsScreen() {
           placeholderTextColor={colors.textSecondary}
           value={search}
           onChangeText={setSearch}
-          maxLength={25}
+          maxLength={40}
           autoCorrect={false}
         />
         {!!search && (
@@ -165,7 +170,7 @@ export default function DebtorsScreen() {
       {/* Debtors List */}
       {visibleDebtors.length > 0 ? (
         <FlashList
-          data={visibleDebtors}
+          data={pagedDebtors}
           renderItem={renderDebtorItem}
           keyExtractor={(item) => item.client.id}
           contentContainerStyle={styles.listContent}
@@ -182,6 +187,7 @@ export default function DebtorsScreen() {
           <View style={styles.emptyContainer}><Text style={styles.emptyMessage}>No se encontraron deudores con ese criterio.</Text></View>
         ) : renderListEmpty()
       )}
+      <PaginationControls page={page} totalItems={visibleDebtors.length} onPageChange={setPage} />
     </View>
   );
 }

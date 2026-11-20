@@ -1,6 +1,8 @@
 const relativeTime = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
 
 function dateOrOriginal(iso: string): Date | null {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (dateOnly) return new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]));
   const parsed = new Date(iso);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
@@ -10,19 +12,47 @@ export function formatCurrency(amount: number): string {
   return `$${amount.toLocaleString('es-AR')}`;
 }
 
-/** Formatea fecha ISO a formato legible: "15 jun 2026" */
-export function formatDate(iso: string): string {
-  const date = dateOrOriginal(iso);
-  return date ? date.toLocaleDateString('es-AR', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\.$/, '') : iso;
+/** Mantiene solo hasta 11 dígitos y los muestra agrupados como pesos argentinos. */
+export function formatArgentineAmountInput(value: string | number): string {
+  const digits = String(value ?? '').replace(/\D/g, '').slice(0, 11);
+  return digits ? Number(digits).toLocaleString('es-AR', { maximumFractionDigits: 0 }) : '';
 }
 
-/** Formatea fecha ISO con hora: "15 jun 2026 · 14:30" */
+/** Convierte un importe editado con separadores a su valor numérico. */
+export function parseArgentineAmountInput(value: string): number {
+  return Number(value.replace(/\D/g, ''));
+}
+
+/** Formatea fecha ISO al formato corto DD-MM-AA. */
+export function formatDate(iso: string): string {
+  const date = dateOrOriginal(iso);
+  if (!date) return iso;
+  return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getFullYear()).slice(-2)}`;
+}
+
+/** Formatea fecha ISO con hora en formato DD-MM-AA · HH:mm. */
 export function formatDateTime(iso: string): string {
   const date = dateOrOriginal(iso);
   if (!date) return iso;
-  const datePart = date.toLocaleDateString('es-AR', { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\.$/, '');
+  const datePart = formatDate(iso);
   const timePart = date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   return `${datePart} · ${timePart}`;
+}
+
+/** Muestra campos de fecha como DD-MM-AA sin cambiar el ISO que usa la API. */
+export function formatDateInput(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return match ? `${match[3]}-${match[2]}-${match[1].slice(-2)}` : value;
+}
+
+/** Convierte DD-MM-AA a YYYY-MM-DD para guardar y filtrar con la API. */
+export function parseDateInput(value: string): string {
+  const match = /^(\d{2})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return value;
+  const day = Number(match[1]); const month = Number(match[2]); const year = 2000 + Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) return value;
+  return `${year}-${match[2]}-${match[1]}`;
 }
 
 /** Tiempo relativo: "hace 2 horas" */

@@ -127,7 +127,8 @@ export const productsService = {
   },
 
   async deactivateProduct(id: string): Promise<void> {
-    await client.patch("/product/desactivate/" + id);
+    // The backend maps DELETE to a soft deactivation in ProductService.
+    await client.delete("/products/" + id);
   },
 
   async activateProduct(id: string): Promise<void> {

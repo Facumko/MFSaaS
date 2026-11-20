@@ -1,7 +1,8 @@
 // src/app/(tabs)/catalog/index.tsx
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
+import { PaginationControls, pageItems } from "../../../components/ui/PaginationControls";
 import {
   ActivityIndicator,
   FlatList,
@@ -22,6 +23,8 @@ import { IProduct } from "../../../types/api.types";
 
 export default function CatalogScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ returnTo?: string }>();
+  const returnToOrders = params.returnTo === 'orders';
   const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
   useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
@@ -40,10 +43,12 @@ export default function CatalogScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [page, setPage] = useState(1);
 
   // Buscador de productos (reactivo, con debounce)
   const [search, setSearch] = useState("");
   const [categorySearch, setCategorySearch] = useState("");
+  const [categoryPage, setCategoryPage] = useState(1);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
 
   // Filtro de categorías con selección múltiple desde un desplegable.
@@ -53,11 +58,15 @@ export default function CatalogScreen() {
   const totalCart = useCartStore((state) => state.total());
 
   const activeFilterCount = appliedCategoryIds.length;
+  const pageProducts = useMemo(() => pageItems(products, page), [products, page]);
+  useEffect(() => setPage(1), [search, appliedCategoryIds.join(",")]);
   const visibleCategories = useMemo(() => {
     const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
     const query = normalize(categorySearch.trim());
     return query ? categories.filter(category => normalize(category.name).startsWith(query)) : categories;
   }, [categories, categorySearch]);
+  const pageCategories = useMemo(() => pageItems(visibleCategories, categoryPage), [visibleCategories, categoryPage]);
+  useEffect(() => setCategoryPage(1), [categorySearch]);
 
   // Cargar productos cada vez que cambia el buscador o el filtro aplicado
   useEffect(() => {
@@ -119,6 +128,7 @@ export default function CatalogScreen() {
     <View style={styles.container}>
       {/* Header con acceso a gestión de categorías */}
       <View style={styles.catalogHeader}>
+        {returnToOrders && <TouchableOpacity style={styles.catalogBackButton} onPress={() => router.replace('/(tabs)/orders' as any)} accessibilityLabel="Volver a pedidos"><Ionicons name="chevron-back" size={22} color={colors.textPrimary} /><Text style={styles.catalogBackText}>Pedidos</Text></TouchableOpacity>}
         <Text style={styles.catalogHeaderTitle}>Catálogo</Text>
         <View style={styles.headerActions}>
           <TouchableOpacity
@@ -146,7 +156,7 @@ export default function CatalogScreen() {
           placeholderTextColor={colors.textDisabled}
           value={search}
           onChangeText={setSearch}
-          maxLength={25}
+          maxLength={40}
         />
       </View>
 
@@ -195,7 +205,7 @@ export default function CatalogScreen() {
         </View>
       ) : (
         <FlatList
-          data={products}
+          data={pageProducts}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[
             styles.listContent,
@@ -213,6 +223,7 @@ export default function CatalogScreen() {
               )}
             </View>
           }
+          ListFooterComponent={<PaginationControls page={page} totalItems={products.length} onPageChange={setPage} />}
           renderItem={({ item }) => {
             const hasStockData = item.stock > 0 || item.minStock > 0;
             const isLowStock = hasStockData && item.stock > 0 && item.stock <= item.minStock;
@@ -223,7 +234,7 @@ export default function CatalogScreen() {
                 onPress={() =>
                   router.push({
                     pathname: "/(tabs)/catalog/[productId]" as any,
-                    params: { productId: item.id },
+                    params: { productId: item.id, ...(returnToOrders ? { returnTo: 'orders' } : {}) },
                   })
                 }
               >
@@ -287,11 +298,11 @@ export default function CatalogScreen() {
             </View>
             <View style={styles.selectorSearch}>
               <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
-              <TextInput style={styles.selectorSearchInput} value={categorySearch} onChangeText={setCategorySearch} placeholder="Buscar categoría" placeholderTextColor={colors.textSecondary} maxLength={25} autoCorrect={false} />
+              <TextInput style={styles.selectorSearchInput} value={categorySearch} onChangeText={setCategorySearch} placeholder="Buscar categoría" placeholderTextColor={colors.textSecondary} maxLength={40} autoCorrect={false} />
               {!!categorySearch && <TouchableOpacity onPress={() => setCategorySearch("")} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}
             </View>
             <ScrollView keyboardShouldPersistTaps="handled">
-              {visibleCategories.map(category => {
+              {pageCategories.map(category => {
                 const active = appliedCategoryIds.includes(category.id);
                 return <TouchableOpacity key={category.id} style={styles.selectorOption} onPress={() => toggleCategory(category.id)}>
                   <Text style={[styles.selectorOptionText, active && styles.selectorOptionTextActive]}>{category.name}</Text>
@@ -300,6 +311,7 @@ export default function CatalogScreen() {
               })}
               {!visibleCategories.length && <Text style={styles.selectorEmpty}>No se encontraron categorías con ese criterio.</Text>}
             </ScrollView>
+            <PaginationControls page={categoryPage} totalItems={visibleCategories.length} onPageChange={setCategoryPage} />
             <View style={styles.selectorActions}>
               <TouchableOpacity style={styles.selectorClearButton} onPress={clearAllFilters}><Text style={styles.selectorClearText}>Limpiar selección</Text></TouchableOpacity>
               <TouchableOpacity style={styles.selectorDoneButton} onPress={() => setCategoryPickerVisible(false)}><Text style={styles.selectorDoneText}>Listo</Text></TouchableOpacity>
@@ -328,6 +340,8 @@ const styles = StyleSheet.create({
     ...typography.heading,
     color: colors.textPrimary,
   },
+  catalogBackButton: { flexDirection: 'row', alignItems: 'center', gap: 2, marginRight: spacing.sm },
+  catalogBackText: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
   headerActions: {
     flexDirection: "row",
     alignItems: "center",

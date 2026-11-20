@@ -16,7 +16,7 @@ import { IProduct } from "../../../types";
 import { colors, spacing, typography } from "../../../theme";
 
 export default function ProductDetailScreen() {
-  const { productId } = useLocalSearchParams<{ productId: string }>();
+  const { productId, returnTo } = useLocalSearchParams<{ productId: string; returnTo?: string }>();
   const router = useRouter();
   const addItem = useCartStore((state) => state.addItem);
   const { canViewCatalog } = usePermissions();
@@ -67,12 +67,18 @@ export default function ProductDetailScreen() {
 
   const handleAddToCart = () => {
     addItem(product, qty);
-    router.back(); // Volvemos al catálogo después de agregar
+    if (returnTo === 'orders') router.replace({ pathname: '/(tabs)/catalog', params: { returnTo: 'orders', addedProduct: product.name } } as any);
+    else router.back();
+  };
+
+  const goBack = () => {
+    if (returnTo === 'orders') router.replace('/(tabs)/orders' as any);
+    else router.back();
   };
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity style={styles.backButton} onPress={() => router.back()} accessibilityLabel="Volver">
+      <TouchableOpacity style={styles.backButton} onPress={goBack} accessibilityLabel="Volver">
         <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         <Text style={styles.backText}>Volver</Text>
       </TouchableOpacity>

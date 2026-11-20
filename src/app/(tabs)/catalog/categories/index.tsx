@@ -15,6 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CategoryCard } from '../../../../components/cards';
+import { PaginationControls, pageItems } from '../../../../components/ui/PaginationControls';
 import { useCategories } from '../../../../hooks';
 import { usePermissions } from '../../../../hooks/usePermissions';
 import { catalogService } from '../../../../services/api/catalogService';
@@ -28,6 +29,10 @@ export default function CategoriesListScreen() {
   useEffect(() => { if (!canManageCategories) router.replace('/(tabs)/catalog' as any); }, [canManageCategories, router]);
   const { categories, loading, error, refetch, search, setSearch } = useCategories(canManageCategories);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [search]);
+  const pageCategories = pageItems(categories, page);
 
   const parentNameOf = (category: ICategory) =>
     category.parentCategoryId
@@ -35,43 +40,29 @@ export default function CategoriesListScreen() {
       : undefined;
 
   const handleCreate = () => {
-    router.push('/(tabs)/catalog/categories/form' as any);
+    router.push({ pathname: '/(tabs)/catalog/categories/form' as any, params: { newCategory: '1' } });
   };
 
   const handleEdit = (category: ICategory) => {
     router.push({
       pathname: '/(tabs)/catalog/categories/form' as any,
-      params: { categoryId: category.id },
+      params: { categoryId: category.id, newCategory: '0' },
     });
   };
 
   const handleToggleActive = (category: ICategory) => {
     const willDeactivate = category.active !== false;
-    Alert.alert(
-      willDeactivate ? 'Desactivar categoría' : 'Activar categoría',
-      `¿Confirmás ${willDeactivate ? 'desactivar' : 'activar'} "${category.name}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Confirmar',
-          onPress: async () => {
-            try {
-              setBusyId(category.id);
-              if (willDeactivate) {
-                await catalogService.deactivateCategory(category.id);
-              } else {
-                await catalogService.activateCategory(category.id);
-              }
-              await refetch();
-            } catch (err) {
-              Alert.alert('Error', 'No se pudo actualizar el estado de la categoría');
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ]
-    );
+    void (async () => {
+      try {
+        setStatusError(null);
+        setBusyId(category.id);
+        if (willDeactivate) await catalogService.deactivateCategory(category.id);
+        else await catalogService.activateCategory(category.id);
+        await refetch();
+      } catch (error: any) {
+        setStatusError(error?.response?.data?.message || 'No se pudo actualizar el estado de la categoría.');
+      } finally { setBusyId(null); }
+    })();
   };
 
   const handleDelete = (category: ICategory) => {
@@ -166,7 +157,7 @@ export default function CategoriesListScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/catalog' as any)}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Categorías</Text>
@@ -182,7 +173,7 @@ export default function CategoriesListScreen() {
           placeholderTextColor={colors.textSecondary}
           value={search}
           onChangeText={setSearch}
-          maxLength={25}
+          maxLength={40}
           editable={!loading}
         />
         {search.length > 0 && (
@@ -193,11 +184,12 @@ export default function CategoriesListScreen() {
       </View>
 
       <Text style={styles.hint}>{canManageCategoryStatus ? 'Mantené presionada una categoría para más acciones' : 'Tocá una categoría para editarla'}</Text>
+      {!!statusError && <Text style={styles.statusError}>{statusError}</Text>}
 
       {/* List */}
       {categories.length > 0 ? (
         <FlashList
-          data={categories}
+          data={pageCategories}
           renderItem={renderCategory}
           keyExtractor={item => item.id}
           contentContainerStyle={styles.listContent}
@@ -209,6 +201,7 @@ export default function CategoriesListScreen() {
       ) : (
         renderListEmpty()
       )}
+      <PaginationControls page={page} totalItems={categories.length} onPageChange={setPage} />
 
       {/* FAB - Create Category */}
       <TouchableOpacity
@@ -266,6 +259,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.sm,
   },
+  statusError: { ...typography.caption, color: colors.error, textAlign: 'center', paddingHorizontal: spacing.md, marginTop: spacing.xs },
   listContent: {
     paddingBottom: spacing.xl + spacing.lg,
     paddingTop: spacing.sm,

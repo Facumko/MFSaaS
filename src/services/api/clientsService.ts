@@ -139,8 +139,8 @@ export const clientsService = {
   },
 
   /**
-   * GET /customer/get
-   * El backend no soporta search ni paginación todavía: se filtra/pagina en el cliente.
+   * GET /customers
+   * Filtra y pagina en el cliente hasta que el backend exponga esos parámetros.
    */
   async getClients(search = '', page = 1): Promise<{ items: IClient[]; total: number }> {
     const response = await client.get<CustomerDto[]>('/customers', { params: { active: true } });
@@ -153,7 +153,7 @@ export const clientsService = {
       );
     }
 
-    const pageSize = 20;
+    const pageSize = 10;
     const total = items.length;
     const start = (page - 1) * pageSize;
     return { items: items.slice(start, start + pageSize), total };
@@ -296,9 +296,9 @@ export const clientsService = {
     await client.patch(`/customers/${id}/activate`);
   },
 
-  /** POST /customers/{customerId}/ledger/payments. La API solo recibe amount. */
-  async registerPayment(clientId: string, amount: number): Promise<IPayment> {
-    await ledgerService.registerPayment(clientId, amount);
-    return { clientId, amount, date: new Date().toISOString() };
+  /** POST /customers/{customerId}/ledger/payments. */
+  async registerPayment(clientId: string, amount: number, method: IPayment['method'] = 'cash'): Promise<IPayment> {
+    await ledgerService.registerPayment(clientId, amount, method ?? 'cash');
+    return { clientId, amount, method, date: new Date().toISOString() };
   },
 };

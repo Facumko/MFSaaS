@@ -69,13 +69,13 @@ export const catalogService = {
     await client.delete(`/categories/${id}`);
   },
 
-  /** PATCH /category/desactivate/{id} — baja lógica (soft delete) */
   async deactivateCategory(id: string): Promise<void> {
-    await client.patch(`/category/desactivate/${id}`);
+    // The backend maps DELETE to a soft deactivation in CategoryService.
+    await client.delete(`/categories/${id}`);
   },
 
-  /** PATCH /categories/{id}/activate */
   async activateCategory(id: string): Promise<void> {
-    await client.patch(`/categories/${id}/activate`);
+    const category = await this.getCategoryById(id);
+    await this.updateCategory(id, { ...category, active: true });
   },
 };

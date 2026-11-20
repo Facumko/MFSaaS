@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -13,7 +13,9 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FormErrorBanner } from "../../../../components/ui/FormErrorBanner";
+import { PaginationControls, pageItems } from "../../../../components/ui/PaginationControls";
 import { useCategories } from "../../../../hooks";
+import { usePermissions } from "../../../../hooks/usePermissions";
 import {
   ProductWriteRequest,
   productsService,
@@ -40,6 +42,7 @@ export default function ProductFormScreen() {
     ? params.productId[0]
     : params.productId;
   const editing = !!productId;
+  const goBack = () => router.replace('/(tabs)/catalog/products' as any);
   const { categories } = useCategories();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -47,6 +50,9 @@ export default function ProductFormScreen() {
   const [price, setPrice] = useState("");
   const [unit, setUnit] = useState(DEFAULT_UNIT);
   const [categoryId, setCategoryId] = useState("");
+  const [categorySearch, setCategorySearch] = useState("");
+  const [categoryPage, setCategoryPage] = useState(1);
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
   const [loading, setLoading] = useState(editing);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -65,14 +71,12 @@ export default function ProductFormScreen() {
         ? "El nombre es obligatorio."
         : value.trim().length < 2
           ? "Usá al menos 2 caracteres."
-          : value.length > 150
-            ? "No puede superar 150 caracteres."
+          : value.length > 30
+            ? "No puede superar 30 caracteres."
             : "";
     if (field === "price") {
-      const amount = Number(value.trim().replace(",", "."));
-      return !value.trim() || !Number.isFinite(amount) || amount < 0
-        ? "Ingresá un precio válido mayor o igual a cero."
-        : "";
+      const digits = value.replace(/\D/g, "");
+      return !digits ? "Ingresá un precio válido." : digits.length > 11 ? "El precio no puede superar 11 dígitos." : "";
     }
     if (field === "description")
       return value.length > 1000 ? "No puede superar 1000 caracteres." : "";
@@ -80,6 +84,22 @@ export default function ProductFormScreen() {
       return value.length > 50 ? "No puede superar 50 caracteres." : "";
     return "";
   };
+  const formatPrice = (value: string) => {
+    const rawDigits = value.replace(/\D/g, '');
+    if (rawDigits.length > 11) Alert.alert('Límite alcanzado', 'El precio admite hasta 11 dígitos.');
+    const digits = rawDigits.slice(0, 11);
+    return digits ? Number(digits).toLocaleString('es-AR', { maximumFractionDigits: 0 }) : '';
+  };
+  const changePrice = (value: string) => {
+    if (/[^\d.]/.test(value)) Alert.alert('Formato incorrecto', 'El precio solo admite números.');
+    const formatted = formatPrice(value);
+    setPrice(formatted);
+    setFieldErrors(current => ({ ...current, price: attempted ? validate('price', formatted) : '' }));
+    setServerError(null);
+  };
+  const visibleCategories = categories.filter(category => category.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(categorySearch.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()));
+  const pageCategories = pageItems(visibleCategories, categoryPage);
+  useEffect(() => setCategoryPage(1), [categorySearch]);
   const changeField = (
     field: string,
     value: string,
@@ -100,6 +120,8 @@ export default function ProductFormScreen() {
     setPrice("");
     setUnit(DEFAULT_UNIT);
     setCategoryId("");
+    setCategorySearch("");
+    setCategoryPickerOpen(false);
     setFieldErrors({});
     setTouched({});
     setAttempted(false);
@@ -120,7 +142,7 @@ export default function ProductFormScreen() {
       setName(product.name);
       setDescription(product.description);
       setSku(product.sku || "");
-      setPrice(String(product.price));
+      setPrice(formatPrice(String(product.price)));
       setUnit(normalizeUnit(product.unit));
       setCategoryId(product.category.id);
     } catch (err: any) {
@@ -151,7 +173,7 @@ export default function ProductFormScreen() {
         resetFields();
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [productId]),
+  }, [productId]),
   );
 
   const unitOptions = PRODUCT_UNITS.some((option) => option.value === unit)
@@ -163,7 +185,7 @@ export default function ProductFormScreen() {
 
   const submit = async () => {
     setAttempted(true);
-    const parsedPrice = Number(price.trim().replace(",", "."));
+    const parsedPrice = Number(price.replace(/\D/g, ""));
     const nextErrors = {
       name: validate("name", name),
       price: validate("price", price),
@@ -196,7 +218,7 @@ export default function ProductFormScreen() {
         "Listo",
         editing ? "Producto actualizado." : "Producto creado.",
       );
-      router.back();
+      goBack();
     } catch (err: any) {
       const parsed = parseApiError(
         err,
@@ -241,7 +263,7 @@ export default function ProductFormScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={goBack}
           accessibilityLabel="Volver"
         >
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
@@ -267,14 +289,13 @@ export default function ProductFormScreen() {
                 : null,
           ]}
           value={name}
-          onChangeText={(value) => changeField("name", value, setName)}
+          onChangeText={(value) => { if (value.length > 30) Alert.alert('Límite alcanzado', 'El nombre del producto admite hasta 30 caracteres.'); changeField('name', value.slice(0, 30), setName); }}
           onBlur={() => {
             setTouched((t) => ({ ...t, name: true }));
             setFieldErrors((e) => ({ ...e, name: validate("name", name) }));
           }}
           placeholder="Nombre del producto"
           editable={!submitting}
-          maxLength={150}
         />
         {!!fieldErrors.name && (
           <Text style={styles.fieldError}>{fieldErrors.name}</Text>
@@ -316,14 +337,15 @@ export default function ProductFormScreen() {
                 : null,
           ]}
           value={price}
-          onChangeText={(value) => changeField("price", value, setPrice)}
+          onChangeText={changePrice}
           onBlur={() => {
             setTouched((t) => ({ ...t, price: true }));
             setFieldErrors((e) => ({ ...e, price: validate("price", price) }));
           }}
-          placeholder="0,00"
-          keyboardType="decimal-pad"
+          placeholder="0"
+          keyboardType="number-pad"
           editable={!submitting}
+          maxLength={14}
         />
         {!!fieldErrors.price && (
           <Text style={styles.fieldError}>{fieldErrors.price}</Text>
@@ -358,7 +380,7 @@ export default function ProductFormScreen() {
           <Text style={styles.fieldError}>{fieldErrors.description}</Text>
         )}
 
-        <Text style={styles.label}>SKU</Text>
+        <Text style={styles.label}>Código</Text>
         <TextInput
           style={[
             styles.input,
@@ -369,14 +391,18 @@ export default function ProductFormScreen() {
                 : null,
           ]}
           value={sku}
-          onChangeText={(value) => changeField("sku", value, setSku)}
+          onChangeText={(value) => {
+            const clean = value.replace(/[^a-zA-Z0-9]/g, '');
+            if (clean.length > 50) Alert.alert('Límite alcanzado', 'El código admite hasta 50 caracteres.');
+            if (clean !== value) Alert.alert('Formato incorrecto', 'El código solo puede contener letras y números.');
+            changeField('sku', clean.slice(0, 50), setSku);
+          }}
           onBlur={() => {
             setTouched((t) => ({ ...t, sku: true }));
             setFieldErrors((e) => ({ ...e, sku: validate("sku", sku) }));
           }}
           placeholder="Código del producto (opcional)"
           editable={!submitting}
-          maxLength={50}
           autoCapitalize="characters"
         />
         {!!fieldErrors.sku && (
@@ -384,38 +410,19 @@ export default function ProductFormScreen() {
         )}
 
         <Text style={styles.label}>Categoría</Text>
-        <View style={styles.chips}>
-          <TouchableOpacity
-            style={[styles.chip, !categoryId && styles.chipSelected]}
-            onPress={() => setCategoryId("")}
-            disabled={submitting}
-          >
-            <Text
-              style={[styles.chipText, !categoryId && styles.chipTextSelected]}
-            >
-              Sin categoría
-            </Text>
+        <View style={styles.categorySelect}>
+          <TouchableOpacity style={styles.categoryTrigger} onPress={() => setCategoryPickerOpen(open => !open)} disabled={submitting} accessibilityRole="button" accessibilityState={{ expanded: categoryPickerOpen }}>
+            <Text style={styles.categoryTriggerText}>{categories.find(category => category.id === categoryId)?.name ?? 'Sin categoría'}</Text>
+            <Ionicons name={categoryPickerOpen ? 'chevron-up' : 'chevron-down'} size={19} color={colors.primary} />
           </TouchableOpacity>
-          {categories.map((category) => (
-            <TouchableOpacity
-              key={category.id}
-              style={[
-                styles.chip,
-                categoryId === category.id && styles.chipSelected,
-              ]}
-              onPress={() => setCategoryId(category.id)}
-              disabled={submitting}
-            >
-              <Text
-                style={[
-                  styles.chipText,
-                  categoryId === category.id && styles.chipTextSelected,
-                ]}
-              >
-                {category.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          {categoryPickerOpen && <View style={styles.categoryDropdown}>
+            <View style={styles.categorySearchBox}><Ionicons name="search-outline" size={17} color={colors.textSecondary} /><TextInput style={styles.categorySearchInput} value={categorySearch} onChangeText={setCategorySearch} placeholder="Buscar categoría" placeholderTextColor={colors.textSecondary} maxLength={40} autoCorrect={false} /></View>
+            <ScrollView style={styles.categoryOptions} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+              <TouchableOpacity style={styles.categoryOption} onPress={() => { setCategoryId(''); setCategoryPickerOpen(false); setCategorySearch(''); }}><Text style={styles.categoryOptionText}>Sin categoría</Text>{!categoryId && <Ionicons name="checkmark" size={18} color={colors.primary} />}</TouchableOpacity>
+              {pageCategories.map(category => <TouchableOpacity key={category.id} style={styles.categoryOption} onPress={() => { setCategoryId(category.id); setCategoryPickerOpen(false); setCategorySearch(''); }}><Text style={styles.categoryOptionText}>{category.name}</Text>{categoryId === category.id && <Ionicons name="checkmark" size={18} color={colors.primary} />}</TouchableOpacity>)}
+              {!!categorySearch && !visibleCategories.length && <Text style={styles.categoryEmpty}>No se encontraron categorías.</Text>}
+            </ScrollView><PaginationControls page={categoryPage} totalItems={visibleCategories.length} onPageChange={setCategoryPage} />
+          </View>}
         </View>
 
         {!!serverError && (
@@ -430,7 +437,7 @@ export default function ProductFormScreen() {
       >
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => router.back()}
+          onPress={goBack}
           disabled={submitting}
         >
           <Text style={styles.cancelText}>Cancelar</Text>
@@ -520,6 +527,16 @@ const styles = StyleSheet.create({
   chipSelected: { backgroundColor: colors.primary },
   chipText: { ...typography.caption, color: colors.primary, fontWeight: "600" },
   chipTextSelected: { color: colors.textInverse },
+  categorySelect: { marginTop: spacing.xs },
+  categoryTrigger: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  categoryTriggerText: { ...typography.body, color: colors.textPrimary },
+  categoryDropdown: { padding: spacing.sm, marginTop: spacing.xs, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  categorySearchBox: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, minHeight: 44, paddingHorizontal: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, backgroundColor: colors.background },
+  categorySearchInput: { flex: 1, ...typography.body, color: colors.textPrimary },
+  categoryOptions: { maxHeight: 190, marginTop: spacing.xs },
+  categoryOption: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  categoryOptionText: { ...typography.body, color: colors.textPrimary },
+  categoryEmpty: { ...typography.caption, color: colors.textSecondary, padding: spacing.md, textAlign: 'center' },
   note: {
     ...typography.caption,
     color: colors.textSecondary,

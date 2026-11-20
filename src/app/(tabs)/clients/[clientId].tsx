@@ -19,7 +19,10 @@ import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { IClientDetail } from '../../../types';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
+import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
 import { parseApiError } from '../../../utils/apiErrors';
+import { formatArgentineAmountInput, formatDate, parseArgentineAmountInput } from '../../../utils/formatters';
+import type { LedgerPaymentMethod } from '../../../services/api/ledgerService';
 
 export default function ClientDetailScreen() {
   const router = useRouter();
@@ -32,6 +35,9 @@ export default function ClientDetailScreen() {
   const [error, setError] = useState<Error | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [historyPage, setHistoryPage] = useState(1);
+  const [addressPage, setAddressPage] = useState(1);
+  const [paymentMethod, setPaymentMethod] = useState<LedgerPaymentMethod>('cash');
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentServerError, setPaymentServerError] = useState<string | null>(null);
   const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
@@ -125,10 +131,14 @@ export default function ClientDetailScreen() {
 
   const handleRegisterPayment = async () => {
     setPaymentAttempted(true);
-    const amount = Number(paymentAmount.trim().replace(',', '.'));
+    const amount = parseArgentineAmountInput(paymentAmount);
     if (!paymentAmount.trim() || !Number.isFinite(amount) || amount <= 0) {
       setPaymentError('Ingresá un monto válido mayor que cero.');
       paymentInput.current?.focus();
+      return;
+    }
+    if (!client || amount > client.totalDebt) {
+      setPaymentError(`El pago no puede superar la deuda pendiente de $${(client?.totalDebt ?? 0).toLocaleString('es-AR')}.`);
       return;
     }
 
@@ -139,7 +149,8 @@ export default function ClientDetailScreen() {
       setProcessingPayment(true);
       await clientsService.registerPayment(
         clientId!,
-        amount
+        amount,
+        paymentMethod
       );
       setShowPaymentModal(false);
       setPaymentAmount('');
@@ -181,7 +192,7 @@ export default function ClientDetailScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/clients' as any)}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Detalles del cliente</Text>
@@ -246,7 +257,7 @@ export default function ClientDetailScreen() {
         {client.addresses.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Direcciones</Text>
-            {client.addresses.map((addr) => (
+            {pageItems(client.addresses, addressPage).map((addr) => (
               <View key={addr.id} style={styles.addressBox}>
                 {addr.label && (
                   <Text style={styles.addressLabel}>{addr.label}</Text>
@@ -256,6 +267,7 @@ export default function ClientDetailScreen() {
                 </Text>
               </View>
             ))}
+            <PaginationControls page={addressPage} totalItems={client.addresses.length} onPageChange={setAddressPage} />
           </View>
         )}
 
@@ -264,7 +276,7 @@ export default function ClientDetailScreen() {
           <View style={styles.orderHistoryHeading}><View><Text style={styles.sectionTitle}>Historial de pedidos</Text><Text style={styles.orderHistoryCount}>{client.orderHistory.length} pedidos registrados</Text></View><TouchableOpacity onPress={fetchClientDetail} accessibilityLabel="Actualizar historial"><Ionicons name="refresh-outline" size={20} color={colors.primary} /></TouchableOpacity></View>
           {!!client.orderHistoryError && <FormErrorBanner message={client.orderHistoryError} onRetry={fetchClientDetail} />}
           {client.orderHistory.length > 0 ? (
-            client.orderHistory.map((order) => (
+            pageItems(client.orderHistory, historyPage).map((order) => (
               <View key={order.id} style={styles.orderBox}>
                 <View style={styles.orderHeader}>
                   <Text style={styles.orderCode}>{order.code}</Text>
@@ -292,7 +304,7 @@ export default function ClientDetailScreen() {
                   </View>
                 </View>
                 <Text style={styles.orderDate}>
-                  {new Date(order.createdAt).toLocaleDateString('es-AR')}
+                  {formatDate(order.createdAt)}
                 </Text>
                 <View style={styles.orderTruckRow}><Ionicons name="bus-outline" size={15} color={colors.primary} /><Text style={styles.orderTruckText}>{order.truckLicensePlate ?? (order.truckId ? `Camión #${order.truckId}` : 'Sin camión asignado')}</Text>{!!order.truckDriverName && <Text style={styles.orderTruckDriver}>· {order.truckDriverName}</Text>}</View>
                 <View style={styles.orderFooter}>
@@ -310,6 +322,7 @@ export default function ClientDetailScreen() {
           ) : (
             client.orderHistoryError ? null : <Text style={styles.noOrdersText}>Todavía no hay pedidos para este cliente.</Text>
           )}
+          <PaginationControls page={historyPage} totalItems={client.orderHistory.length} onPageChange={setHistoryPage} />
         </View>
         {/* Deactivate client */}
         {client.active && (
@@ -356,7 +369,7 @@ export default function ClientDetailScreen() {
       {hasDebt && (
         <TouchableOpacity
           style={styles.paymentButton}
-          onPress={() => setShowPaymentModal(true)}
+          onPress={() => { setPaymentMethod('cash'); setShowPaymentModal(true); }}
           activeOpacity={0.8}
         >
           <Ionicons name="cash" size={20} color={colors.textInverse} />
@@ -385,16 +398,18 @@ export default function ClientDetailScreen() {
               <TextInput
                 ref={paymentInput}
                 style={[styles.modalInput, paymentError && styles.modalInputError, paymentTouched && !paymentError && paymentAmount.trim() && styles.modalInputValid]}
-                placeholder="0.00"
+                placeholder="0"
                 placeholderTextColor={colors.textSecondary}
-                keyboardType="decimal-pad"
-                value={paymentAmount}
-                onChangeText={value => { setPaymentAmount(value); if (paymentAttempted || paymentTouched) { const number = Number(value.trim().replace(',', '.')); setPaymentError(!value.trim() || !Number.isFinite(number) || number <= 0 ? 'Ingresá un monto válido mayor que cero.' : null); } setPaymentServerError(null); }}
-                onBlur={() => { setPaymentTouched(true); const number = Number(paymentAmount.trim().replace(',', '.')); setPaymentError(!paymentAmount.trim() || !Number.isFinite(number) || number <= 0 ? 'Ingresá un monto válido mayor que cero.' : null); }}
+                keyboardType="number-pad"
+                value={formatArgentineAmountInput(paymentAmount)}
+                onChangeText={value => { const digits = value.replace(/\D/g, '').slice(0, 11); setPaymentAmount(digits); if (paymentAttempted || paymentTouched) { const number = Number(digits); setPaymentError(!digits || !Number.isFinite(number) || number <= 0 ? 'Ingresá un monto válido mayor que cero.' : null); } setPaymentServerError(null); }}
+                onBlur={() => { setPaymentTouched(true); const number = parseArgentineAmountInput(paymentAmount); setPaymentError(!paymentAmount || !Number.isFinite(number) || number <= 0 ? 'Ingresá un monto válido mayor que cero.' : null); }}
                 editable={!processingPayment}
-                maxLength={15}
+                maxLength={14}
               />
               {!!paymentError && <Text style={styles.paymentErrorText}>{paymentError}</Text>}
+              <Text style={styles.modalLabel}>Medio de pago</Text>
+              <View style={styles.methodContainer}>{([['cash', 'Efectivo'], ['transfer', 'Transferencia']] as [LedgerPaymentMethod, string][]).map(([method, label]) => <TouchableOpacity key={method} style={[styles.methodButton, paymentMethod === method && styles.methodButtonActive]} onPress={() => setPaymentMethod(method)} disabled={processingPayment}><Text style={[styles.methodText, paymentMethod === method && styles.methodTextActive]}>{label}</Text></TouchableOpacity>)}</View>
               {!!paymentServerError && <FormErrorBanner message={paymentServerError} onRetry={handleRegisterPayment} />}
 
               <TouchableOpacity
