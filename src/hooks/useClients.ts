@@ -60,13 +60,15 @@ export const useClients = (enabled = true): UseClientsReturn => {
     fetchClients();
   }, [fetchClients]);
 
+  const updateSearch = useCallback((value: string) => { setSearch(value); setPage(1); }, []);
+
   return {
     clients,
     loading,
     error,
     refetch: fetchClients,
     search,
-    setSearch,
+    setSearch: updateSearch,
     total,
     page,
     setPage,

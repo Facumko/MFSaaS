@@ -146,13 +146,13 @@ export const clientsService = {
     let items = response.data.map(toIClient);
 
     if (search) {
-      const q = search.toLowerCase();
+      const q = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
       items = items.filter(
-        c => c.businessName.toLowerCase().includes(q) || c.taxId.includes(q)
+        c => c.businessName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(q) || c.taxId.startsWith(q)
       );
     }
 
-    const pageSize = 20;
+    const pageSize = 10;
     const total = items.length;
     const start = (page - 1) * pageSize;
     return { items: items.slice(start, start + pageSize), total };
@@ -308,9 +308,9 @@ export const clientsService = {
     await client.patch(`/customers/${id}/activate`);
   },
 
-  /** POST /customers/{customerId}/ledger/payments. La API solo recibe amount. */
-  async registerPayment(clientId: string, amount: number): Promise<IPayment> {
-    await ledgerService.registerPayment(clientId, amount);
-    return { clientId, amount, date: new Date().toISOString() };
+  /** POST /customers/{customerId}/ledger/payments. */
+  async registerPayment(clientId: string, amount: number, method: IPayment['method'] = 'cash'): Promise<IPayment> {
+    await ledgerService.registerPayment(clientId, amount, method ?? 'cash');
+    return { clientId, amount, method, date: new Date().toISOString() };
   },
 };

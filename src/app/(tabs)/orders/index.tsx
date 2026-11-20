@@ -1,10 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,24 +14,32 @@ import {
   View,
 } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
-import { SelectField } from '../../../components/ui/SelectField';
+import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
+import { DatePickerCalendar } from '../../../components/ui/DatePickerCalendar';
 import { clientsService } from '../../../services/api/clientsService';
 import { logisticsService, Truck } from '../../../services/api/logisticsService';
 import { productsService } from '../../../services/api/productsService';
-import { DeliveryPaymentMethod, OrderListItem, OrderDeliveryRequest, salesService } from '../../../services/api/salesService';
+import { DeliveryPaymentRequest, OrderListItem, salesService } from '../../../services/api/salesService';
+import { ledgerService } from '../../../services/api/ledgerService';
+import { ReceiptChannel, ReceiptData, receiptService } from '../../../services/api/receiptService';
 import { useCartStore } from '../../../store/cartStore';
 import { useAuthStore } from '../../../store/authStore';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { IAddress, IClient, IClientSummary, IProduct } from '../../../types';
 import { parseApiError } from '../../../utils/apiErrors';
+import { formatArgentineAmountInput, formatDate, formatDateTime } from '../../../utils/formatters';
 
 type ScreenMode = 'new' | 'history';
 type EditableOrderItem = { productId: number; productName: string; unit: string; quantity: number; unitPrice: number };
 type OrderDetailData = { customerId: number; deliveryAddressId?: number; deliveryAddressSnapshot: string; deliveryDate: string; createdById?: number; items: EditableOrderItem[] };
 type DeliveryPaymentChoice = 'full' | 'account' | 'partial';
+type ReceiptPaymentMethod = 'cash' | 'transfer' | 'mixed';
+type PendingDeliveryPayment = { order: OrderListItem; choice: DeliveryPaymentChoice; amount: number; method: ReceiptPaymentMethod; cashAmount: string };
+type ReceiptPrompt = { data: ReceiptData; email?: string; phone?: string };
 
 const money = (value: number) => `$${value.toLocaleString('es-AR')}`;
+const normalizeSearch = (value: string) => value.toLocaleLowerCase('es-AR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 const normalizeText = (value: string) => value.toLocaleLowerCase('es-AR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 const localToday = () => {
   const date = new Date();
@@ -46,15 +55,26 @@ const statusCopy: Record<string, string> = {
 
 export default function OrdersScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ newClientId?: string }>();
+  const newClientId = Array.isArray(params.newClientId) ? params.newClientId[0] : params.newClientId;
   const user = useAuthStore(state => state.user);
-  const { canAssignOrdersToTruck, canViewOrders, canRegisterSale, isDelivery, isAdmin } = usePermissions();
-  const isDriver = isDelivery;
-  const { items, total, updateQty, clearCart } = useCartStore();
-  const [mode, setMode] = useState<ScreenMode>(isDriver || !canRegisterSale ? 'history' : 'new');
+  const { canAssignOrdersToTruck, canViewOrders, canManageClients } = usePermissions();
+  const isDriver = user?.role === 'delivery';
+  const { items, total, itemCount, updateQty, clearCart } = useCartStore();
+  const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
   const [clients, setClients] = useState<IClientSummary[]>([]);
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientPickerOpen, setClientPickerOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<IClientSummary | null>(null);
   const [addresses, setAddresses] = useState<IAddress[]>([]);
   const [selectedAddress, setSelectedAddress] = useState<IAddress | null>(null);
+  const [addressPickerOpen, setAddressPickerOpen] = useState(false);
+  const [addingAddress, setAddingAddress] = useState(false);
+  const [newAddressLabel, setNewAddressLabel] = useState('');
+  const [newAddressStreet, setNewAddressStreet] = useState('');
+  const [newAddressCity, setNewAddressCity] = useState('');
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [productsExpanded, setProductsExpanded] = useState(false);
   const [loadingClients, setLoadingClients] = useState(true);
   const [loadingAddresses, setLoadingAddresses] = useState(false);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -62,10 +82,21 @@ export default function OrdersScreen() {
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
   const [cancelConfirmOrder, setCancelConfirmOrder] = useState<OrderListItem | null>(null);
   const [orders, setOrders] = useState<OrderListItem[]>([]);
+  const [historyClient, setHistoryClient] = useState('');
+  const [historyStatus, setHistoryStatus] = useState<string | null>(null);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [clientPickerPage, setClientPickerPage] = useState(1);
+  const [addressPickerPage, setAddressPickerPage] = useState(1);
+  const [truckPickerPage, setTruckPickerPage] = useState(1);
+  const [editProductPage, setEditProductPage] = useState(1);
   const [assignmentOrder, setAssignmentOrder] = useState<OrderListItem | null>(null);
+  const [assignmentTruckPage, setAssignmentTruckPage] = useState(1);
   const [savingAssignment, setSavingAssignment] = useState(false);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [receiptPrompt, setReceiptPrompt] = useState<ReceiptPrompt | null>(null);
+  const [receiptSharing, setReceiptSharing] = useState<ReceiptChannel | null>(null);
+  const [receiptShareError, setReceiptShareError] = useState<string | null>(null);
   const [detailOrder, setDetailOrder] = useState<OrderListItem | null>(null);
   const [detail, setDetail] = useState<OrderDetailData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -77,7 +108,10 @@ export default function OrdersScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [selectedTruckId, setSelectedTruckId] = useState<string | null>(null);
+  const [truckSearch, setTruckSearch] = useState('');
+  const [truckPickerOpen, setTruckPickerOpen] = useState(false);
   const [deliveryDate, setDeliveryDate] = useState(localToday());
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [loadingTrucks, setLoadingTrucks] = useState(false);
   const [truckError, setTruckError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -86,8 +120,8 @@ export default function OrdersScreen() {
   const [deliveryChoice, setDeliveryChoice] = useState<DeliveryPaymentChoice | null>(null);
   const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState<Exclude<DeliveryPaymentMethod, 'CURRENT_ACCOUNT'> | null>(null);
   const [deliveryAmount, setDeliveryAmount] = useState('');
+  const [receiptPaymentMethod, setReceiptPaymentMethod] = useState<ReceiptPaymentMethod>('cash');
   const [mixedCashAmount, setMixedCashAmount] = useState('');
-  const [mixedTransferAmount, setMixedTransferAmount] = useState('');
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [deliveryStatusUnknown, setDeliveryStatusUnknown] = useState(false);
   const [deliverySubmitting, setDeliverySubmitting] = useState(false);
@@ -98,14 +132,62 @@ export default function OrdersScreen() {
     setLoadingClients(true);
     setLoadError(null);
     try {
-      const result = await clientsService.getClients('', 1, true);
-      setClients(result.items.map(({ id, businessName, taxId }) => ({ id, businessName, taxId })));
+      let page = 1;
+      let result = await clientsService.getClients('', page);
+      const allClients = [...result.items];
+      while (allClients.length < result.total) {
+        page += 1;
+        result = await clientsService.getClients('', page);
+        if (!result.items.length) break;
+        allClients.push(...result.items);
+      }
+      setClients(allClients.map(({ id, businessName, taxId }) => ({ id, businessName, taxId })));
     } catch (error) {
       setLoadError(parseApiError(error, 'No se pudieron cargar los clientes.').message);
     } finally {
       setLoadingClients(false);
     }
   }, []);
+
+  const visibleClients = useMemo(() => {
+    const query = normalizeSearch(clientSearch.trim());
+    if (!query) return clients;
+    return clients.filter(client =>
+      normalizeSearch(client.businessName).startsWith(query) ||
+      client.taxId.startsWith(query),
+    );
+  }, [clientSearch, clients]);
+
+  const visibleTrucks = useMemo(() => {
+    const query = normalizeSearch(truckSearch.trim());
+    const assignedTrucks = trucks.filter(truck => Boolean(truck.driverId || truck.driverName));
+    if (!query) return assignedTrucks;
+    return assignedTrucks.filter(truck =>
+      normalizeSearch(truck.licensePlate).includes(query) ||
+      normalizeSearch(truck.driverName ?? '').includes(query),
+    );
+  }, [truckSearch, trucks]);
+  const pageClients = useMemo(() => pageItems(visibleClients, clientPickerPage), [visibleClients, clientPickerPage]);
+  const pageAddresses = useMemo(() => pageItems(addresses, addressPickerPage), [addresses, addressPickerPage]);
+  const pageTrucks = useMemo(() => pageItems(visibleTrucks, truckPickerPage), [visibleTrucks, truckPickerPage]);
+  const pageAssignmentTrucks = useMemo(() => pageItems(trucks, assignmentTruckPage), [trucks, assignmentTruckPage]);
+  const pageEditProducts = useMemo(() => pageItems(editProducts, editProductPage), [editProducts, editProductPage]);
+
+  const visibleHistoryOrders = useMemo(() => {
+    const clientQuery = normalizeSearch(historyClient);
+    return orders.filter(order => {
+      const matchedClient = clients.find(client => client.id === order.customerId)?.businessName;
+      return (!clientQuery || normalizeSearch(matchedClient ?? order.customerName).startsWith(clientQuery)) &&
+        (!historyStatus || order.status === historyStatus);
+    });
+  }, [orders, clients, historyClient, historyStatus]);
+  const pageHistoryOrders = useMemo(() => pageItems(visibleHistoryOrders, historyPage), [visibleHistoryOrders, historyPage]);
+  useEffect(() => setHistoryPage(1), [historyClient, historyStatus]);
+  useEffect(() => setClientPickerPage(1), [clientSearch]);
+  useEffect(() => setAddressPickerPage(1), [addresses]);
+  useEffect(() => setTruckPickerPage(1), [truckSearch]);
+  useEffect(() => setAssignmentTruckPage(1), [assignmentOrder]);
+  useEffect(() => setEditProductPage(1), [editProducts]);
 
   const loadOrders = useCallback(async () => {
     setLoadingOrders(true);
@@ -117,7 +199,13 @@ export default function OrdersScreen() {
       } else if (isDriver) {
         setOrders(await salesService.getOrdersByTruck(Number(user?.truckId)));
       } else {
-        setOrders(await salesService.getOrdersWithTruckDetails());
+        const fetched = await salesService.getOrdersWithTruckDetails(isDriver ? { truckId: Number(user?.truckId) } : {});
+        const dueTime = (order: OrderListItem) => {
+          const parsed = Date.parse(order.deliveryDate || order.createdAt);
+          return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+        };
+        fetched.sort((a, b) => dueTime(a) - dueTime(b));
+        setOrders(fetched);
       }
     } catch (error) {
       setOrderError(parseApiError(error, 'No se pudieron cargar los pedidos.').message);
@@ -130,7 +218,7 @@ export default function OrdersScreen() {
     setLoadingTrucks(true);
     setTruckError(null);
     try {
-      setTrucks(await logisticsService.getActiveTrucks());
+      setTrucks((await logisticsService.getActiveTrucks()).filter(truck => Boolean(truck.driverId || truck.driverName)));
     } catch (error) {
       setTruckError(parseApiError(error, 'No se pudieron cargar los camiones activos.').message);
     } finally {
@@ -193,7 +281,7 @@ export default function OrdersScreen() {
       return;
     }
     if (!detail.deliveryAddressId) {
-      setDetailError('No se pudo asociar la dirección guardada con la dirección del pedido. El backend debe devolver deliveryAddressId para permitir una edición segura.');
+      setDetailError('No se pudo identificar la dirección asociada a este pedido, por eso no se pueden guardar cambios todavía.');
       return;
     }
     setDetailError(null);
@@ -248,8 +336,9 @@ export default function OrdersScreen() {
     }
   };
 
-  useEffect(() => { if (canViewOrders && canRegisterSale && !isDriver) void loadClients(); }, [canViewOrders, canRegisterSale, isDriver, loadClients]);
-  useEffect(() => { if (canViewOrders && canAssignOrdersToTruck && !isDriver) void loadTrucks(); }, [canViewOrders, canAssignOrdersToTruck, isDriver, loadTrucks]);
+  useEffect(() => { if (canViewOrders && !isDriver) void loadClients(); }, [canViewOrders, isDriver, loadClients]);
+  useEffect(() => { if (newClientId && canViewOrders && !isDriver) void loadClients(); }, [newClientId, canViewOrders, isDriver, loadClients]);
+  useEffect(() => { if (canViewOrders && !isDriver) void loadTrucks(); }, [canViewOrders, isDriver, loadTrucks]);
   useEffect(() => { if (canViewOrders && (isDriver || mode === 'history')) void loadOrders(); }, [canViewOrders, isDriver, mode, loadOrders]);
 
   const chooseClient = async (clientSummary: IClientSummary) => {
@@ -269,6 +358,37 @@ export default function OrdersScreen() {
     }
   };
 
+  const saveNewAddress = async () => {
+    if (!selectedClient || !newAddressStreet.trim()) {
+      setOrderError('Ingresá la calle y altura de la dirección.');
+      return;
+    }
+    setSavingAddress(true);
+    setOrderError(null);
+    try {
+      const address = await clientsService.createClientAddress(selectedClient.id, {
+        id: '', label: newAddressLabel.trim() || 'Otra dirección', street: newAddressStreet.trim(),
+        city: newAddressCity.trim(), isDefault: false,
+      });
+      setAddresses(current => [...current, address]);
+      setSelectedAddress(address);
+      setNewAddressLabel(''); setNewAddressStreet(''); setNewAddressCity('');
+      setAddingAddress(false); setAddressPickerOpen(false);
+    } catch (error) {
+      setOrderError(parseApiError(error, 'No se pudo guardar la nueva dirección.').message);
+    } finally { setSavingAddress(false); }
+  };
+
+  useEffect(() => {
+    if (!newClientId) return;
+    const createdClient = clients.find(client => client.id === newClientId);
+    if (createdClient && selectedClient?.id !== createdClient.id) {
+      setMode('new');
+      setClientPickerOpen(false);
+      void chooseClient(createdClient);
+    }
+  }, [newClientId, clients]);
+
   const handleCreateOrder = async () => {
     if (!selectedClient) {
       setOrderError('Elegí un cliente para continuar.');
@@ -282,7 +402,7 @@ export default function OrdersScreen() {
     const deliveryAddressId = Number(selectedAddress.id);
     const orderItems = items.map(item => ({ productId: Number(item.productId), quantity: item.qty }));
     if (![customerId, deliveryAddressId, ...orderItems.map(item => item.productId)].every(id => Number.isInteger(id) && id > 0)) {
-      setOrderError('El backend requiere IDs numéricos para el cliente, la dirección y los productos. Revisá que los datos hayan sido guardados en el servidor.');
+      setOrderError('Revisá los datos del cliente, la dirección y los productos e intentá de nuevo.');
       return;
     }
     if (!orderItems.length || orderItems.some(item => !Number.isInteger(item.quantity) || item.quantity < 1)) {
@@ -290,20 +410,36 @@ export default function OrdersScreen() {
       return;
     }
     const validDate = /^\d{4}-\d{2}-\d{2}$/.test(deliveryDate) && !Number.isNaN(Date.parse(`${deliveryDate}T00:00:00`));
-    if (!validDate) {
-      setOrderError('Ingresá una fecha de entrega válida con formato AAAA-MM-DD.');
+    if (!validDate || deliveryDate < localToday()) {
+      setOrderError('Elegí una fecha válida desde hoy en adelante.');
       return;
     }
     const truckId = !canAssignOrdersToTruck || selectedTruckId == null ? undefined : Number(selectedTruckId);
     if (truckId != null && (!Number.isInteger(truckId) || truckId < 1)) {
-      setOrderError('El camión seleccionado no tiene un ID válido del servidor.');
+      setOrderError('No se pudo identificar el camión seleccionado. Actualizá la pantalla e intentá de nuevo.');
       return;
     }
     setSubmitting(true);
     setOrderError(null);
     setSuccessMessage(null);
     try {
-      const assignedTruck = canAssignOrdersToTruck ? trucks.find(truck => truck.id === selectedTruckId) : undefined;
+      const assignedTruck = trucks.find(truck => truck.id === selectedTruckId);
+      if (truckId) {
+        const currentStock = await logisticsService.getTruckStock(String(truckId), deliveryDate);
+        for (const item of orderItems) {
+          const entries = currentStock.filter(stockItem => stockItem.productId === String(item.productId) && (!stockItem.deliveryDate || stockItem.deliveryDate === deliveryDate));
+          const available = entries.reduce((sum, stockItem) => sum + Math.max(0, stockItem.quantityLoaded - stockItem.quantityReturned), 0);
+          const missing = Math.max(0, item.quantity - available);
+          if (missing > 0) {
+            const existingEntry = entries[0];
+            if (existingEntry) {
+              await logisticsService.updateStock(String(truckId), existingEntry.id, { quantityLoaded: existingEntry.quantityLoaded + missing, quantityReturned: existingEntry.quantityReturned });
+            } else {
+              await logisticsService.loadProduct(String(truckId), { productId: item.productId, deliveryDate, quantityLoaded: missing });
+            }
+          }
+        }
+      }
       const created = await salesService.createOrder({ customerId, deliveryAddressId, items: orderItems, deliveryDate, ...(truckId ? { truckId } : {}) });
       clearCart();
       setSelectedClient(null);
@@ -323,7 +459,7 @@ export default function OrdersScreen() {
     if (!assignmentOrder) return;
     const truckId = Number(truck.id);
     if (!Number.isInteger(truckId) || truckId < 1) {
-      setOrderError('El camión seleccionado no tiene un ID válido del servidor.');
+      setOrderError('No se pudo identificar el camión seleccionado. Actualizá la pantalla e intentá de nuevo.');
       return;
     }
     setSavingAssignment(true);
@@ -352,7 +488,7 @@ export default function OrdersScreen() {
         }
       }
       if (!Number.isInteger(addressId) || addressId < 1) {
-        throw new Error('No se pudo asociar la dirección guardada con la dirección del pedido. El backend debe devolver deliveryAddressId o una dirección única para poder cambiar el camión de forma segura.');
+        throw new Error('No se pudo identificar la dirección asociada al pedido para cambiar el camión.');
       }
       await salesService.assignOrderToTruck(assignmentOrder.id, truckId, addressId);
       setSuccessMessage(`${assignmentOrder.code} asignado a ${truck.licensePlate}.`);
@@ -371,6 +507,10 @@ export default function OrdersScreen() {
   };
 
   const updateStatus = async (order: OrderListItem, action: 'route' | 'deliver' | 'cancel') => {
+    if (action === 'route' && !order.truckId) {
+      setOrderError('Asigná un camión antes de pasar el pedido a reparto.');
+      return;
+    }
     setUpdatingOrderId(order.id);
     setOrderError(null);
     try {
@@ -392,14 +532,32 @@ export default function OrdersScreen() {
     setDeliveryChoice(null);
     setDeliveryPaymentMethod(null);
     setDeliveryAmount('');
+    setReceiptPaymentMethod('cash');
     setMixedCashAmount('');
-    setMixedTransferAmount('');
     setDeliveryError(null);
     setDeliveryStatusUnknown(false);
   };
 
   const closeDeliveryConfirmation = () => {
+    if (deliveryAlreadyMarked && deliveryChoice === 'partial' && deliveryOrder) {
+      const amount = deliveryChoice === 'full'
+        ? deliveryOrder.total
+        : Number(deliveryAmount.trim().replace(',', '.'));
+      setPendingDeliveryPayment({ order: deliveryOrder, choice: deliveryChoice, amount, method: receiptPaymentMethod, cashAmount: mixedCashAmount });
+    }
     setDeliveryOrder(null);
+  };
+
+  const resumePendingDeliveryPayment = () => {
+    if (!pendingDeliveryPayment) return;
+    setDeliveryOrder(pendingDeliveryPayment.order);
+    setDeliveryChoice(pendingDeliveryPayment.choice);
+    setReceiptPaymentMethod(pendingDeliveryPayment.method);
+    setMixedCashAmount(pendingDeliveryPayment.cashAmount);
+    setDeliveryAmount(pendingDeliveryPayment.choice === 'partial' ? String(pendingDeliveryPayment.amount) : '');
+    setDeliveryError(null);
+    setDeliveryAlreadyMarked(true);
+    setDeliveryStatusUnknown(false);
   };
 
   const confirmDelivery = async () => {
@@ -457,16 +615,30 @@ export default function OrdersScreen() {
         ? { paymentMethod: 'MIXED', cashAmount, transferAmount }
         : { paymentMethod: deliveryPaymentMethod };
     }
+    const cashPart = Number(mixedCashAmount.trim().replace(',', '.'));
+    if (deliveryChoice !== 'account' && receiptPaymentMethod === 'mixed' && (!Number.isFinite(cashPart) || cashPart <= 0 || cashPart >= amount)) {
+      setDeliveryError('En un pago mixto, el efectivo debe ser mayor que cero y menor que el importe recibido.');
+      return;
+    }
+    const deliveryPayment: DeliveryPaymentRequest = deliveryChoice === 'account' || deliveryChoice === 'partial'
+      ? { paymentMethod: 'CURRENT_ACCOUNT' }
+      : receiptPaymentMethod === 'cash'
+        ? { paymentMethod: 'CASH' }
+        : receiptPaymentMethod === 'transfer'
+          ? { paymentMethod: 'TRANSFER' }
+          : { paymentMethod: 'MIXED', cashAmount: cashPart, transferAmount: amount - cashPart };
 
     setDeliverySubmitting(true);
     setDeliveryError(null);
+    let delivered = deliveryAlreadyMarked;
+    let partialPaymentRegistered = false;
     try {
       if (deliveryStatusUnknown) {
         let latest: Record<string, any>;
         try {
           latest = await salesService.getOrder(order.id);
         } catch {
-          throw new Error('No se pudo verificar si el servidor guardó la entrega. Actualizá la conexión y reintentá; todavía no se volvió a enviar el cambio.');
+          throw new Error('No se pudo confirmar la entrega. Revisá la conexión y actualizá el pedido antes de volver a intentar.');
         }
         const status = String(latest.status ?? '').toUpperCase();
         if (status === 'DELIVERED') {
@@ -486,61 +658,136 @@ export default function OrdersScreen() {
       } catch (requestError) {
         let latest: Record<string, any>;
         try {
-          latest = await salesService.getOrder(order.id);
-        } catch {
-          setDeliveryStatusUnknown(true);
-          throw requestError;
+          await salesService.markDelivered(order.id, deliveryPayment);
+        } catch (requestError) {
+          let latest: Record<string, any>;
+          try {
+            latest = await salesService.getOrder(order.id);
+          } catch {
+            setDeliveryStatusUnknown(true);
+            throw requestError;
+          }
+          if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') {
+            setDeliveryStatusUnknown(true);
+            throw requestError;
+          }
+        }
+        delivered = true;
+        setDeliveryAlreadyMarked(true);
+        setDeliveryStatusUnknown(false);
+      }
+
+      if (deliveryChoice === 'partial') {
+        let customerId = order.customerId;
+        if (!customerId) {
+          const raw = await salesService.getOrder(order.id);
+          const customer = raw.customer ?? raw.client ?? {};
+          customerId = String(raw.customerId ?? raw.clientId ?? customer.id ?? '');
         }
         if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') {
           setDeliveryStatusUnknown(true);
           throw requestError;
         }
-        setDeliveryStatusUnknown(false);
-        setSuccessMessage(`${order.code} ya figura entregado en el servidor. Revisá la cuenta corriente para confirmar el registro del cobro.`);
-        setDeliveryOrder(null);
-        void loadOrders();
-        return;
+        await ledgerService.registerPayment(customerId, amount, receiptPaymentMethod);
+        partialPaymentRegistered = true;
       }
+
+      const raw = await salesService.getOrder(order.id).catch(() => ({} as Record<string, any>));
+      const rawCustomer = raw.customer ?? raw.client ?? {};
+      const rawItems = raw.items ?? raw.orderItems ?? raw.details ?? order.items ?? [];
+      const receiptLines = Array.isArray(rawItems) ? rawItems.map((item: Record<string, any>) => ({
+        name: String(item.productName ?? item.product?.name ?? item.name ?? 'Producto'),
+        quantity: Number(item.quantity ?? item.qty ?? 0),
+        unitPrice: Number(item.unitPrice ?? item.price ?? item.product?.unitPrice ?? 0),
+      })) : [];
+      const methodLabel = deliveryChoice === 'account' ? 'Cuenta corriente' : receiptPaymentMethod === 'cash' ? 'Efectivo' : receiptPaymentMethod === 'transfer' ? 'Transferencia' : `Mixto (efectivo ${money(Number(mixedCashAmount.replace(',', '.')) || 0)}; transferencia ${money(Math.max(0, amount - (Number(mixedCashAmount.replace(',', '.')) || 0)))})`;
+      const receiptData: ReceiptData = {
+        code: order.code,
+        date: formatDateTime(new Date().toISOString()),
+        customer: String(raw.customerName ?? rawCustomer.businessName ?? rawCustomer.name ?? order.customerName),
+        items: receiptLines,
+        paymentMethod: methodLabel,
+        total: Number(raw.totalAmount ?? raw.total ?? order.total),
+        responsible: user?.fullName ?? user?.username ?? 'Usuario responsable',
+      };
+      let clientEmail = String(rawCustomer.email ?? raw.email ?? '');
+      let clientPhone = String(rawCustomer.phone ?? raw.phone ?? '');
+      const rawCustomerId = String(raw.customerId ?? raw.clientId ?? rawCustomer.id ?? order.customerId ?? '');
+      if (/^\d+$/.test(rawCustomerId) && Number(rawCustomerId) > 0) {
+        try {
+          const clientInfo = await clientsService.getClientById(rawCustomerId);
+          clientEmail ||= clientInfo.email;
+          clientPhone ||= clientInfo.phone;
+        } catch { /* Mantener los datos de contacto incluidos en el pedido, si los hay. */ }
+      }
+      setReceiptShareError(null);
+      setReceiptPrompt({ data: receiptData, email: clientEmail || undefined, phone: clientPhone || undefined });
 
       const paidLabel = deliveryChoice === 'account'
         ? 'Quedó en cuenta corriente.'
         : deliveryChoice === 'full'
-          ? `Se registró el pago completo por ${deliveryPaymentMethod === 'MIXED' ? `${money(Number(mixedCashAmount.replace(',', '.')) || 0)} en efectivo y ${money(Number(mixedTransferAmount.replace(',', '.')) || 0)} por transferencia` : money(order.total)}.`
-          : `Se registró ${money(deliveryPaymentMethod === 'MIXED' ? (Number(mixedCashAmount.replace(',', '.')) || 0) + (Number(mixedTransferAmount.replace(',', '.')) || 0) : Number(deliveryAmount.replace(',', '.')))}; el saldo quedó en cuenta corriente.`;
-      setSuccessMessage(`${order.code} entregado. ${paidLabel}`);
+          ? `Se registró el pago completo de ${money(amount)}.`
+          : `Se registró ${money(amount)}; el saldo de ${money(order.total - amount)} quedó en cuenta corriente.`;
+      setSuccessMessage(`${order.code} entregado correctamente. ${paidLabel}`);
       setDeliveryOrder(null);
       setDeliveryStatusUnknown(false);
       await loadOrders();
     } catch (error) {
-      setDeliveryError(`${deliveryStatusUnknown ? 'No se pudo confirmar si el servidor registró la entrega. El reintento verificará el estado antes de volver a enviarla. ' : ''}${parseApiError(error, 'No se pudo confirmar la entrega.').message}`);
+      if (delivered) {
+        setDeliveryAlreadyMarked(true);
+        if (deliveryChoice === 'partial' && !partialPaymentRegistered) setPendingDeliveryPayment({ order, choice: deliveryChoice, amount, method: receiptPaymentMethod, cashAmount: mixedCashAmount });
+        setDeliveryError(`El pedido ya quedó entregado, pero no se pudo registrar el pago. Podés reintentar el pago sin volver a confirmar la entrega. Si el error fue de conexión, revisá la cuenta corriente antes de reintentar para evitar duplicarlo. ${parseApiError(error, 'Error al registrar el pago.').message}`);
+        void loadOrders();
+      } else {
+        setDeliveryError(`${deliveryStatusUnknown ? 'No se pudo confirmar el estado de la entrega. Actualizá el pedido antes de volver a intentar. ' : ''}${parseApiError(error, 'No se pudo confirmar la entrega.').message}`);
+      }
     } finally {
       setDeliverySubmitting(false);
     }
   };
 
-  const openCatalog = () => router.push('/(tabs)/catalog' as any);
+  const shareReceipt = async (channel: ReceiptChannel) => {
+    if (!receiptPrompt) return;
+    const recipient = channel === 'email' ? receiptPrompt.email : receiptPrompt.phone;
+    if (!recipient) {
+      setReceiptShareError(channel === 'email' ? 'El cliente no tiene un correo registrado.' : 'El cliente no tiene un teléfono registrado.');
+      return;
+    }
+    setReceiptSharing(channel);
+    setReceiptShareError(null);
+    try {
+      await receiptService.generateAndShare(receiptPrompt.data, channel, recipient);
+      setSuccessMessage(current => `${current ?? 'La entrega quedó registrada.'} Comprobante PDF preparado para compartir por ${channel === 'email' ? 'correo' : 'WhatsApp'} con ${recipient}.`);
+      setReceiptPrompt(null);
+    } catch (error) {
+      setReceiptShareError(parseApiError(error, 'No se pudo preparar el comprobante PDF.').message);
+    } finally { setReceiptSharing(null); }
+  };
 
+  const openCatalog = () => router.push({ pathname: '/(tabs)/catalog' as any, params: { returnTo: 'orders' } });
   const renderOrder = (order: OrderListItem) => {
     const truck = trucks.find(item => String(item.id) === order.truckId);
     const assignedTruckName = order.truckLicensePlate ?? truck?.licensePlate ?? (order.truckId ? `Camión #${order.truckId}` : 'Sin camión asignado');
     const driverName = order.truckDriverName ?? truck?.driverName;
-    const canAssignTruck = canAssignOrdersToTruck && (order.status === 'PENDING' || order.status === 'IN_ROUTE');
+    const canAssignTruck = canAssignOrdersToTruck && order.status === 'PENDING';
+    const displayCustomer = clients.find(client => client.id === order.customerId)?.businessName || (order.customerName === 'Cliente' ? 'Cliente sin identificar' : order.customerName);
+    const statusStyle = order.status === 'DELIVERED' ? styles.statusDelivered : order.status === 'CANCELLED' ? styles.statusCancelled : order.status === 'IN_ROUTE' ? styles.statusInRoute : styles.statusPending;
+    const statusTextStyle = order.status === 'DELIVERED' ? styles.statusDeliveredText : order.status === 'CANCELLED' ? styles.statusCancelledText : order.status === 'IN_ROUTE' ? styles.statusInRouteText : styles.statusPendingText;
     return (
     <View key={order.id || order.code} style={styles.orderCard}>
       <View style={styles.orderTop}>
         <View style={styles.orderTitleWrap}>
-          <Text style={styles.orderCode}>{order.code}</Text>
-          <Text style={styles.orderClient}>{order.customerName}</Text>
+          <Text style={styles.orderClient}>{displayCustomer}</Text>
         </View>
-        <View style={[styles.statusPill, order.status === 'DELIVERED' && styles.statusDelivered, order.status === 'CANCELLED' && styles.statusCancelled]}>
-          <Text style={[styles.statusText, order.status === 'DELIVERED' && styles.statusDeliveredText, order.status === 'CANCELLED' && styles.statusCancelledText]}>
+        <View style={[styles.statusPill, statusStyle]}>
+          <Text style={[styles.statusText, statusTextStyle]}>
             {statusCopy[order.status] ?? order.status}
           </Text>
         </View>
       </View>
       <View style={styles.orderMeta}>
         <Text style={styles.orderMetaText}>{order.itemCount} productos</Text>
-        {!!order.createdAt && <Text style={styles.orderMetaText}>{new Date(order.createdAt).toLocaleDateString('es-AR')}</Text>}
+        {!!order.createdAt && <Text style={styles.orderMetaText}>{formatDate(order.createdAt)}</Text>}
         <Text style={styles.orderTotal}>{money(order.total)}</Text>
       </View>
       <View style={styles.orderTruckRow}>
@@ -562,9 +809,9 @@ export default function OrdersScreen() {
       </TouchableOpacity>
       {(order.status === 'PENDING' || order.status === 'IN_ROUTE') && (
         <View style={styles.orderActions}>
-          {(isAdmin || isDriver) && order.status === 'PENDING' && <TouchableOpacity style={styles.secondaryAction} onPress={() => void updateStatus(order, 'route')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : isDriver ? 'Iniciar reparto' : 'Pasar a reparto'}</Text></TouchableOpacity>}
-          {order.status === 'IN_ROUTE' && (isDriver || isAdmin) && <TouchableOpacity style={styles.secondaryAction} onPress={() => isDriver ? openDeliveryConfirmation(order) : void updateStatus(order, 'deliver')} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : isDriver ? 'Registrar entrega y cobro' : 'Marcar entregado'}</Text></TouchableOpacity>}
-          {isAdmin && <TouchableOpacity style={styles.cancelAction} onPress={() => setCancelConfirmOrder(order)} disabled={updatingOrderId === order.id}>
+          {order.status === 'PENDING' && <TouchableOpacity style={[styles.secondaryAction, !order.truckId && styles.secondaryActionDisabled]} onPress={() => void updateStatus(order, 'route')} disabled={updatingOrderId === order.id || !order.truckId}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : order.truckId ? 'Pasar a reparto' : 'Asigná un camión primero'}</Text></TouchableOpacity>}
+          {order.status === 'IN_ROUTE' && <TouchableOpacity style={styles.secondaryAction} onPress={() => openDeliveryConfirmation(order)} disabled={updatingOrderId === order.id}><Text style={styles.secondaryActionText}>{updatingOrderId === order.id ? 'Actualizando…' : 'Registrar entrega y pago'}</Text></TouchableOpacity>}
+          {!isDriver && <TouchableOpacity style={styles.cancelAction} onPress={() => setCancelConfirmOrder(order)} disabled={updatingOrderId === order.id}>
             <Text style={styles.cancelActionText}>{updatingOrderId === order.id ? 'Actualizando…' : 'Cancelar'}</Text>
           </TouchableOpacity>}
         </View>
@@ -585,7 +832,7 @@ export default function OrdersScreen() {
 
       {canRegisterSale && !isDriver && <View style={styles.modeSwitch}>
         <TouchableOpacity style={[styles.modeButton, mode === 'new' && styles.modeButtonActive]} onPress={() => setMode('new')}>
-          <Text style={[styles.modeText, mode === 'new' && styles.modeTextActive]}>Armar pedido{items.length ? ` · ${items.length}` : ''}</Text>
+          <Text style={[styles.modeText, mode === 'new' && styles.modeTextActive]}>Nuevo pedido</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.modeButton, mode === 'history' && styles.modeButtonActive]} onPress={() => setMode('history')}>
           <Text style={[styles.modeText, mode === 'history' && styles.modeTextActive]}>Historial</Text>
@@ -595,12 +842,14 @@ export default function OrdersScreen() {
       {isDriver || !canRegisterSale || mode === 'history' ? (
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
-            <View><Text style={styles.sectionTitle}>Actividad reciente</Text><Text style={styles.sectionHint}>Seguimiento de pedidos del backend</Text></View>
+            <View><Text style={styles.sectionTitle}>Actividad reciente</Text><Text style={styles.sectionHint}>Pedidos y entregas recientes</Text></View>
             <TouchableOpacity onPress={() => void loadOrders()} style={styles.refreshButton} accessibilityLabel="Actualizar pedidos"><Ionicons name="refresh" size={19} color={colors.primary} /></TouchableOpacity>
           </View>
           {!!successMessage && <View style={styles.successBanner}><Ionicons name="checkmark-circle" size={20} color={colors.success} /><Text style={styles.successBannerText}>{successMessage}</Text><TouchableOpacity onPress={() => setSuccessMessage(null)} accessibilityLabel="Cerrar confirmación"><Ionicons name="close" size={18} color={colors.success} /></TouchableOpacity></View>}
           {!!orderError && <FormErrorBanner message={orderError} onRetry={loadOrders} />}
-          {loadingOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : orders.length ? orders.map(renderOrder) : <View style={styles.emptyCard}><Ionicons name="file-tray-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>Todavía no hay pedidos</Text><Text style={styles.emptyText}>Cuando registres uno, aparecerá acá.</Text></View>}
+          <View style={styles.historyFilters}><Text style={styles.historyFilterTitle}>Filtrar historial</Text><TextInput style={styles.historyFilterInput} value={historyClient} onChangeText={setHistoryClient} placeholder="Cliente" placeholderTextColor={colors.textSecondary} maxLength={40} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.historyStatusFilters}><TouchableOpacity style={[styles.historyStatusChip, !historyStatus && styles.historyStatusChipActive]} onPress={() => setHistoryStatus(null)}><Text style={[styles.historyStatusText, !historyStatus && styles.historyStatusTextActive]}>Todos</Text></TouchableOpacity>{(Object.keys(statusCopy) as Array<keyof typeof statusCopy>).map(status => { const selected = historyStatus === status; const chipStyle = status === 'DELIVERED' ? styles.statusDelivered : status === 'CANCELLED' ? styles.statusCancelled : status === 'IN_ROUTE' ? styles.statusInRoute : styles.statusPending; const labelStyle = status === 'DELIVERED' ? styles.statusDeliveredText : status === 'CANCELLED' ? styles.statusCancelledText : status === 'IN_ROUTE' ? styles.statusInRouteText : styles.statusPendingText; return <TouchableOpacity key={status} style={[styles.historyStatusChip, selected && chipStyle]} onPress={() => setHistoryStatus(selected ? null : status)}><Text style={[styles.historyStatusText, selected && labelStyle]}>{statusCopy[status]}</Text></TouchableOpacity>; })}</ScrollView></View>
+          {loadingOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageHistoryOrders.length ? pageHistoryOrders.map(renderOrder) : <View style={styles.emptyCard}><Ionicons name="file-tray-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{orders.length ? 'Sin coincidencias' : 'Todavía no hay pedidos'}</Text><Text style={styles.emptyText}>{orders.length ? 'Probá cambiando los filtros del historial.' : 'Cuando registres uno, aparecerá acá.'}</Text></View>}
+          <PaginationControls page={historyPage} totalItems={visibleHistoryOrders.length} onPageChange={setHistoryPage} />
         </View>
       ) : (
         <>
@@ -609,67 +858,50 @@ export default function OrdersScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>1. Cliente</Text><Text style={styles.sectionHint}>Seleccioná quién recibe el pedido</Text></View></View>
             {loadingClients ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : clients.length ? (
-              <SelectField
-                options={clients.map(item => ({ value: item.id, label: item.businessName, subtitle: item.taxId || undefined }))}
-                value={selectedClient?.id ?? null}
-                onChange={id => { const item = clients.find(client => client.id === id); if (item) void chooseClient(item); }}
-                placeholder="Elegí un cliente"
-                searchPlaceholder="Escribí el nombre del cliente..."
-                disabled={submitting}
-              />
+              <TouchableOpacity style={styles.pickerButton} onPress={() => setClientPickerOpen(true)} disabled={submitting} accessibilityRole="button">
+                <View style={styles.pickerButtonCopy}><Text style={[styles.pickerValue, !selectedClient && styles.pickerPlaceholder]} numberOfLines={1}>{selectedClient?.businessName ?? 'Seleccionar cliente'}</Text>{selectedClient && <Text style={styles.pickerCaption}>{selectedClient.taxId}</Text>}</View>
+                <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
+              </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay clientes disponibles.</Text>}
           </View>
 
-          {selectedClient && <View style={styles.section}>
-            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>2. Entrega</Text><Text style={styles.sectionHint}>Elegí una dirección registrada</Text></View></View>
-            {loadingAddresses ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : addresses.length ? addresses.map(address => (
-              <TouchableOpacity key={address.id} style={[styles.addressOption, selectedAddress?.id === address.id && styles.addressOptionActive]} onPress={() => setSelectedAddress(address)} disabled={submitting}>
-                <Ionicons name={selectedAddress?.id === address.id ? 'radio-button-on' : 'radio-button-off'} size={20} color={selectedAddress?.id === address.id ? colors.primary : colors.textSecondary} />
-                <View style={styles.addressTextWrap}><Text style={styles.addressLabel}>{address.label || 'Dirección'}</Text><Text style={styles.addressText}>{address.street}{address.city ? `, ${address.city}` : ''}</Text></View>
-                {!!address.isDefault && <Text style={styles.defaultTag}>PRINCIPAL</Text>}
-              </TouchableOpacity>
-            )) : <Text style={styles.emptyText}>Este cliente todavía no tiene una dirección guardada.</Text>}
-          </View>}
+          <View style={styles.section}>
+            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>2. Dirección de entrega</Text><Text style={styles.sectionHint}>Elegí dónde se entrega el pedido</Text></View></View>
+            {!selectedClient ? <View style={styles.disabledStep}><Ionicons name="location-outline" size={19} color={colors.textSecondary} /><Text style={styles.disabledStepText}>Primero seleccioná un cliente para ver sus direcciones.</Text></View> : loadingAddresses ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : addresses.length ? <TouchableOpacity style={styles.addressPickerButton} onPress={() => setAddressPickerOpen(true)} disabled={submitting} accessibilityRole="button"><View style={styles.addressPickerIcon}><Ionicons name="location-outline" size={19} color={colors.primary} /></View><View style={styles.addressTextWrap}><Text style={styles.addressLabel}>{selectedAddress?.label || 'Seleccionar dirección'}</Text><Text style={styles.addressText}>{selectedAddress ? `${selectedAddress.street}${selectedAddress.city ? `, ${selectedAddress.city}` : ''}` : 'Elegí una dirección guardada'}</Text></View><Text style={styles.changeAddressText}>Cambiar</Text><Ionicons name="chevron-forward" size={18} color={colors.primary} /></TouchableOpacity> : <Text style={styles.emptyText}>Este cliente todavía no tiene una dirección guardada.</Text>}
+          </View>
 
           <View style={styles.section}>
             <View style={styles.sectionHeading}>
               <View><Text style={styles.sectionTitle}>3. Productos</Text><Text style={styles.sectionHint}>{items.length ? 'Revisá cantidades antes de enviar' : 'Elegí productos para armar el pedido'}</Text></View>
               <TouchableOpacity style={styles.addProductsButton} onPress={openCatalog} disabled={submitting}>
                 <Ionicons name="add" size={17} color={colors.primary} />
-                <Text style={styles.addProductsText}>{items.length ? 'Agregar más' : 'Ver catálogo'}</Text>
+                <Text style={styles.addProductsText}>{items.length ? 'Agregar más' : 'Elegir productos'}</Text>
               </TouchableOpacity>
             </View>
-            {items.length ? items.map(item => <View key={item.productId} style={styles.itemCard}>
+            {items.length > 0 && <View style={styles.cartSummary}><View style={styles.cartSummaryCopy}><Text style={styles.cartSummaryTitle}>{items.length} {items.length === 1 ? 'producto' : 'productos'} · {itemCount()} unidades</Text><Text style={styles.cartSummaryAmount}>Subtotal {money(total())}</Text></View><TouchableOpacity style={styles.cartExpandButton} onPress={() => setProductsExpanded(value => !value)}><Text style={styles.cartExpandText}>{productsExpanded ? 'Ocultar' : 'Ver productos'}</Text><Ionicons name={productsExpanded ? 'chevron-up' : 'chevron-down'} size={17} color={colors.primary} /></TouchableOpacity></View>}
+            {items.length > 0 && productsExpanded ? items.map(item => <View key={item.productId} style={styles.itemCard}>
               <View style={styles.itemInfo}><Text style={styles.itemName}>{item.productName}</Text><Text style={styles.itemDetails}>{money(item.unitPrice)} · {item.unit}</Text><Text style={styles.itemSubtotal}>{money(item.subtotal)}</Text></View>
               <View style={styles.counter}><TouchableOpacity style={styles.counterButton} onPress={() => updateQty(item.productId, item.qty - 1)} disabled={submitting}><Ionicons name="remove" size={18} color={colors.primary} /></TouchableOpacity><Text style={styles.quantity}>{item.qty}</Text><TouchableOpacity style={styles.counterButton} onPress={() => updateQty(item.productId, item.qty + 1)} disabled={submitting}><Ionicons name="add" size={18} color={colors.primary} /></TouchableOpacity></View>
-            </View>) : <View style={styles.emptyCard}><Ionicons name="basket-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>El carrito está vacío</Text><Text style={styles.emptyText}>Explorá el catálogo y agregá productos. Al volver, van a seguir en tu pedido.</Text><TouchableOpacity style={styles.emptyCatalogButton} onPress={openCatalog} disabled={submitting}><Ionicons name="grid-outline" size={18} color={colors.textInverse} /><Text style={styles.emptyCatalogButtonText}>Elegir productos</Text></TouchableOpacity></View>}
+            </View>) : !items.length ? <View style={styles.emptyCard}><Ionicons name="basket-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>El carrito está vacío</Text><Text style={styles.emptyText}>Elegí productos para armar el pedido.</Text></View> : null}
           </View>
 
           <View style={styles.section}>
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Fecha de entrega</Text><Text style={styles.sectionHint}>Indicá cuándo debe entregarse el pedido</Text></View></View>
             <Text style={styles.dateLabel}>Fecha de entrega</Text>
-            <TextInput value={deliveryDate} onChangeText={value => { setDeliveryDate(value); setOrderError(null); }} style={styles.deliveryDateInput} placeholder="AAAA-MM-DD" maxLength={10} editable={!submitting} />
-            {canAssignOrdersToTruck && <>
-            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>5. Camión</Text><Text style={styles.sectionHint}>Podés dejarlo sin asignar</Text></View><TouchableOpacity onPress={() => void loadTrucks()} disabled={loadingTrucks} accessibilityLabel="Actualizar camiones"><Ionicons name="refresh-outline" size={18} color={colors.primary} /></TouchableOpacity></View>
+            <TouchableOpacity style={styles.datePickerButton} onPress={() => { const date = new Date(`${deliveryDate}T00:00:00`); setCalendarMonth(Number.isNaN(date.getTime()) ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(date.getFullYear(), date.getMonth(), 1)); setCalendarOpen(true); }} disabled={submitting}><Ionicons name="calendar-outline" size={19} color={colors.primary} /><Text style={styles.datePickerValue}>{formatDate(deliveryDate)}</Text><Text style={styles.datePickerHint}>Seleccionar</Text><Ionicons name="chevron-down" size={18} color={colors.primary} /></TouchableOpacity>
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} />}
             {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? (
-              <View style={styles.truckChoices}>
-                <TouchableOpacity style={[styles.truckChoice, selectedTruckId === null && styles.truckChoiceActive]} onPress={() => { setSelectedTruckId(null); setOrderError(null); }} disabled={submitting}>
-                  <Ionicons name={selectedTruckId === null ? 'radio-button-on' : 'radio-button-off'} size={18} color={selectedTruckId === null ? colors.primary : colors.textSecondary} />
-                  <Text style={[styles.truckChoiceText, selectedTruckId === null && styles.truckChoiceTextActive]}>Sin asignar</Text>
-                </TouchableOpacity>
-                {trucks.map(truck => <TouchableOpacity key={truck.id} style={[styles.truckChoice, selectedTruckId === truck.id && styles.truckChoiceActive]} onPress={() => { setSelectedTruckId(truck.id); setOrderError(null); }} disabled={submitting}>
-                  <Ionicons name={selectedTruckId === truck.id ? 'radio-button-on' : 'radio-button-off'} size={18} color={selectedTruckId === truck.id ? colors.primary : colors.textSecondary} />
-                  <View style={styles.truckChoiceInfo}><Text style={[styles.truckChoiceText, selectedTruckId === truck.id && styles.truckChoiceTextActive]}>{truck.licensePlate}</Text><Text style={styles.truckDriver}>{truck.driverName ?? (truck.driverId ? `Chofer ID ${truck.driverId}` : 'Sin chofer asignado')}</Text></View>
-                </TouchableOpacity>)}
-              </View>
+              <TouchableOpacity style={styles.pickerButton} onPress={() => setTruckPickerOpen(true)} disabled={submitting} accessibilityRole="button">
+                <View style={styles.pickerButtonCopy}><Text style={[styles.pickerValue, selectedTruckId === null && styles.pickerPlaceholder]} numberOfLines={1}>{trucks.find(truck => truck.id === selectedTruckId)?.licensePlate ?? 'Sin asignar · Elegir camión (opcional)'}</Text>{selectedTruckId && <Text style={styles.pickerCaption}>{trucks.find(truck => truck.id === selectedTruckId)?.driverName ?? 'Sin chofer asignado'}</Text>}</View>
+                <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
+              </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
             </>}
           </View>
 
           <View style={styles.footer}>
-            <View style={styles.totalRow}><View><Text style={styles.totalLabel}>TOTAL ESTIMADO</Text><Text style={styles.totalNote}>El backend calcula el importe final</Text></View><Text style={styles.totalAmount}>{money(total())}</Text></View>
+            <View style={styles.totalRow}><View><Text style={styles.totalLabel}>TOTAL ESTIMADO</Text><Text style={styles.totalNote}>El importe puede variar al confirmar el pedido</Text></View><Text style={styles.totalAmount}>{money(total())}</Text></View>
             <TouchableOpacity style={[styles.submitButton, (submitting || !items.length || !selectedClient || !selectedAddress) && styles.submitDisabled]} onPress={() => void handleCreateOrder()} disabled={submitting || !items.length || !selectedClient || !selectedAddress}>
               {submitting ? <><ActivityIndicator color={colors.textInverse} /><Text style={styles.submitText}>Enviando pedido…</Text></> : <><Ionicons name="checkmark-circle-outline" size={20} color={colors.textInverse} /><Text style={styles.submitText}>Enviar pedido</Text></>}
             </TouchableOpacity>
@@ -693,14 +925,15 @@ export default function OrdersScreen() {
             <Text style={styles.assignmentModalDescription}>Elegí la unidad y el chofer que van a realizar esta entrega.</Text>
             {!!assignmentError && <Text style={styles.assignmentErrorText}>{assignmentError}</Text>}
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} disabled={loadingTrucks} />}
-            {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? <ScrollView style={styles.assignmentTruckList} keyboardShouldPersistTaps="handled">{trucks.map(truck => {
+            {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? <ScrollView style={styles.assignmentTruckList} keyboardShouldPersistTaps="handled">{pageAssignmentTrucks.map(truck => {
               const selected = assignmentOrder?.truckId === truck.id;
               return <TouchableOpacity key={truck.id} style={[styles.assignmentTruckOption, selected && styles.assignmentTruckSelected]} onPress={() => void assignOrder(truck)} disabled={savingAssignment}>
                 <View style={[styles.assignmentTruckIcon, selected && styles.assignmentTruckIconSelected]}><Ionicons name="bus" size={19} color={selected ? colors.textInverse : colors.primary} /></View>
                 <View style={styles.assignmentTruckInfo}><Text style={styles.assignmentTruckPlate}>{truck.licensePlate || `Camión #${truck.id}`}</Text><Text style={styles.assignmentTruckDriver}>{truck.driverName ?? (truck.driverId ? `Chofer ID ${truck.driverId}` : 'Sin chofer asignado')}</Text></View>
                 {savingAssignment ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name={selected ? 'checkmark-circle' : 'chevron-forward'} size={20} color={selected ? colors.success : colors.textSecondary} />}
               </TouchableOpacity>;
-            })}</ScrollView> : !truckError ? <View style={styles.noTrucksCard}><Ionicons name="bus-outline" size={23} color={colors.textSecondary} /><Text style={styles.emptyText}>No hay camiones activos disponibles.</Text><TouchableOpacity onPress={() => void loadTrucks()}><Text style={styles.assignmentRetry}>Volver a cargar</Text></TouchableOpacity></View> : null}
+            })}</ScrollView> : !truckError ? <View style={styles.noTrucksCard}><Ionicons name="bus-outline" size={23} color={colors.textSecondary} /><Text style={styles.emptyText}>No hay camiones activos con chofer asignado.</Text><TouchableOpacity onPress={() => void loadTrucks()}><Text style={styles.assignmentRetry}>Volver a cargar</Text></TouchableOpacity></View> : null}
+            <PaginationControls page={assignmentTruckPage} totalItems={trucks.length} onPageChange={setAssignmentTruckPage} />
             <TouchableOpacity style={styles.assignmentCloseButton} onPress={() => setAssignmentOrder(null)} disabled={savingAssignment}><Text style={styles.assignmentCloseText}>Volver al historial</Text></TouchableOpacity>
           </View>
         </View>
@@ -722,7 +955,7 @@ export default function OrdersScreen() {
             {detailLoading ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : detail ? <ScrollView style={styles.detailsScroll} keyboardShouldPersistTaps="handled">
               <View style={styles.detailInfoGrid}>
                 <View style={styles.detailInfoCell}><Text style={styles.detailLabel}>Estado</Text><Text style={styles.detailValue}>{statusCopy[detailOrder?.status ?? ''] ?? detailOrder?.status}</Text></View>
-                <View style={styles.detailInfoCell}><Text style={styles.detailLabel}>Fecha</Text><Text style={styles.detailValue}>{detail.deliveryDate || (detailOrder?.createdAt ? new Date(detailOrder.createdAt).toLocaleDateString('es-AR') : '—')}</Text></View>
+                <View style={styles.detailInfoCell}><Text style={styles.detailLabel}>Fecha</Text><Text style={styles.detailValue}>{detail.deliveryDate ? formatDate(detail.deliveryDate) : detailOrder?.createdAt ? formatDate(detailOrder.createdAt) : '—'}</Text></View>
                 <View style={styles.detailInfoCell}><Text style={styles.detailLabel}>Entrega</Text><Text style={styles.detailValue}>{detail.deliveryAddressSnapshot || 'Dirección registrada'}</Text></View>
                 <View style={styles.detailInfoCell}><Text style={styles.detailLabel}>Camión</Text><Text style={styles.detailValue}>{detailOrder?.truckLicensePlate ?? (detailOrder?.truckId ? `Camión #${detailOrder.truckId}` : 'Sin asignar')}</Text></View>
               </View>
@@ -740,9 +973,10 @@ export default function OrdersScreen() {
               {!detail.items.length && !editingDetail && <Text style={styles.emptyText}>El pedido no tiene productos detallados en la respuesta.</Text>}
               {editingDetail && <View style={styles.addEditProductsSection}>
                 <Text style={styles.detailItemsTitle}>Agregar del catálogo</Text>
-                {loadingEditProducts ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : editProducts.map(product => <TouchableOpacity key={product.id} style={styles.catalogProductOption} onPress={() => addProductToEdit(product)}>
+                {loadingEditProducts ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageEditProducts.map(product => <TouchableOpacity key={product.id} style={styles.catalogProductOption} onPress={() => addProductToEdit(product)}>
                   <View style={styles.catalogProductInfo}><Text style={styles.detailProductName}>{product.name}</Text><Text style={styles.detailProductPrice}>{money(product.price)} · {product.unit}</Text></View><Ionicons name="add-circle-outline" size={21} color={colors.primary} />
                 </TouchableOpacity>)}
+                {!loadingEditProducts && <PaginationControls page={editProductPage} totalItems={editProducts.length} onPageChange={setEditProductPage} />}
               </View>}
               <View style={styles.detailTotalRow}><Text style={styles.detailTotalLabel}>Total informado</Text><Text style={styles.detailTotalAmount}>{money(detailOrder?.total ?? 0)}</Text></View>
             </ScrollView> : null}
@@ -785,29 +1019,14 @@ export default function OrdersScreen() {
                   <View style={styles.deliveryChoiceCopy}><Text style={styles.deliveryChoiceTitle}>{title}</Text><Text style={styles.deliveryChoiceSubtitle}>{subtitle}</Text></View>
                 </TouchableOpacity>;
               })}
-              {deliveryChoice && deliveryChoice !== 'account' && <View style={styles.deliveryAmountField}>
-                <Text style={styles.deliveryAmountLabel}>Medio de pago</Text>
-                {([
-                  ['CASH', 'Efectivo'],
-                  ['TRANSFER', 'Transferencia'],
-                  ['MIXED', 'Mixto'],
-                ] as [Exclude<DeliveryPaymentMethod, 'CURRENT_ACCOUNT'>, string][]).map(([method, label]) => <TouchableOpacity key={method} style={[styles.deliveryChoice, deliveryPaymentMethod === method && styles.deliveryChoiceSelected]} onPress={() => { setDeliveryPaymentMethod(method); setDeliveryError(null); }} disabled={deliverySubmitting} accessibilityRole="radio" accessibilityState={{ selected: deliveryPaymentMethod === method }}>
-                  <Ionicons name={deliveryPaymentMethod === method ? 'radio-button-on' : 'radio-button-off'} size={19} color={deliveryPaymentMethod === method ? colors.primary : colors.textSecondary} />
-                  <Text style={styles.deliveryChoiceTitle}>{label}</Text>
-                </TouchableOpacity>)}
-                {deliveryPaymentMethod === 'MIXED' ? <>
-                  <Text style={styles.deliveryAmountLabel}>Importe en efectivo</Text>
-                  <TextInput value={mixedCashAmount} onChangeText={value => { setMixedCashAmount(value); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="decimal-pad" editable={!deliverySubmitting} />
-                  <Text style={styles.deliveryAmountLabel}>Importe por transferencia</Text>
-                  <TextInput value={mixedTransferAmount} onChangeText={value => { setMixedTransferAmount(value); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="decimal-pad" editable={!deliverySubmitting} />
-                </> : deliveryChoice === 'partial' ? <>
-                  <Text style={styles.deliveryAmountLabel}>Importe recibido</Text>
-                  <TextInput value={deliveryAmount} onChangeText={value => { setDeliveryAmount(value); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="decimal-pad" editable={!deliverySubmitting} />
-                </> : <Text style={styles.deliveryAmountHint}>Se registrará {money(deliveryOrder?.total ?? 0)} en {deliveryPaymentMethod === 'CASH' ? 'efectivo' : 'transferencia'}.</Text>}
-                {!!deliveryOrder && deliveryChoice === 'partial' && <Text style={styles.deliveryAmountHint}>El saldo restante quedará en cuenta corriente.</Text>}
+              {deliveryChoice === 'partial' && <View style={styles.deliveryAmountField}>
+                <Text style={styles.deliveryAmountLabel}>Importe recibido</Text>
+                <TextInput value={formatArgentineAmountInput(deliveryAmount)} onChangeText={value => { setDeliveryAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting && !deliveryAlreadyMarked} />
+                {!!deliveryOrder && <Text style={styles.deliveryAmountHint}>Quedarán {money(Math.max(0, deliveryOrder.total - (Number(deliveryAmount.replace(',', '.')) || 0)))} en cuenta corriente.</Text>}
               </View>}
+              {deliveryChoice !== null && deliveryChoice !== 'account' && <View style={styles.deliveryAmountField}><Text style={styles.deliveryAmountLabel}>Forma de pago</Text><View style={styles.paymentMethods}>{([['cash', 'Efectivo'], ['transfer', 'Transferencia'], ['mixed', 'Mixto']] as [ReceiptPaymentMethod, string][]).map(([method, label]) => <TouchableOpacity key={method} style={[styles.paymentMethod, receiptPaymentMethod === method && styles.paymentMethodActive]} onPress={() => setReceiptPaymentMethod(method)} disabled={deliverySubmitting || deliveryAlreadyMarked}><Text style={[styles.paymentMethodText, receiptPaymentMethod === method && styles.paymentMethodTextActive]}>{label}</Text></TouchableOpacity>)}</View>{receiptPaymentMethod === 'mixed' && <TextInput value={formatArgentineAmountInput(mixedCashAmount)} onChangeText={value => { setMixedCashAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="Importe en efectivo" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting && !deliveryAlreadyMarked} />}</View>}
               {!!deliveryError && <View style={styles.deliveryErrorBox}><Ionicons name="alert-circle-outline" size={18} color={colors.error} /><Text style={styles.deliveryErrorText}>{deliveryError}</Text></View>}
-              <Text style={styles.deliveryFootnote}>{deliveryChoice === 'account' ? 'El importe total queda pendiente en la cuenta corriente del cliente.' : deliveryChoice ? 'El backend registrará la entrega y el medio de pago en la misma operación.' : 'Elegí cómo se resolvió el pago para continuar.'}</Text>
+              <Text style={styles.deliveryFootnote}>{deliveryChoice === 'account' ? 'El importe total queda pendiente en la cuenta corriente del cliente.' : deliveryChoice ? 'La forma de pago se incluye en el comprobante PDF.' : 'Elegí una opción para ver cómo se reflejará el pago en la cuenta corriente.'}</Text>
               <View style={styles.deliveryActions}>
                 <TouchableOpacity style={styles.deliveryCancelButton} onPress={closeDeliveryConfirmation} disabled={deliverySubmitting}><Text style={styles.deliveryCancelText}>Volver</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.deliveryConfirmButton, (!deliveryChoice || deliverySubmitting) && styles.deliveryConfirmDisabled]} onPress={() => void confirmDelivery()} disabled={!deliveryChoice || deliverySubmitting}>
@@ -817,6 +1036,21 @@ export default function OrdersScreen() {
             </ScrollView>
           </View>
         </View>
+      </Modal>
+      <Modal visible={!!receiptPrompt} transparent animationType="fade" onRequestClose={() => !receiptSharing && setReceiptPrompt(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.receiptModal}>
+          <View style={styles.deliveryHeader}>
+            <View style={styles.assignmentModalIcon}><Ionicons name="document-text-outline" size={22} color={colors.primary} /></View>
+            <View style={styles.assignmentModalTitleWrap}><Text style={styles.assignmentModalTitle}>Entrega registrada</Text><Text style={styles.assignmentModalHint}>{receiptPrompt?.data.code} · {receiptPrompt?.data.customer}</Text></View>
+          </View>
+          <Text style={styles.receiptSuccessText}>El pago y la entrega se registraron correctamente.</Text>
+          <Text style={styles.receiptPromptText}>¿Querés compartir el comprobante PDF con el cliente?</Text>
+          {receiptPrompt?.email ? <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareReceipt('email')} disabled={!!receiptSharing}><Ionicons name="mail-outline" size={19} color={colors.primary} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>Correo electrónico</Text><Text style={styles.receiptChannelTarget}>{receiptPrompt.email}</Text></View>{receiptSharing === 'email' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity> : <Text style={styles.receiptNoContact}>El cliente no tiene un correo registrado.</Text>}
+          {receiptPrompt?.phone ? <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareReceipt('whatsapp')} disabled={!!receiptSharing}><Ionicons name="logo-whatsapp" size={19} color={colors.success} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>WhatsApp</Text><Text style={styles.receiptChannelTarget}>{receiptPrompt.phone}</Text></View>{receiptSharing === 'whatsapp' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity> : <Text style={styles.receiptNoContact}>El cliente no tiene un teléfono registrado.</Text>}
+          <Text style={styles.receiptHint}>{Platform.OS === 'web' ? 'Se abrirá la impresión para guardar el PDF y después el correo o WhatsApp del cliente. Adjuntá el archivo antes de enviarlo.' : 'Se abrirá el menú para compartir el PDF con el contacto elegido.'}</Text>
+          {!!receiptShareError && <Text style={styles.assignmentErrorText}>{receiptShareError}</Text>}
+          <TouchableOpacity style={styles.receiptDismiss} onPress={() => setReceiptPrompt(null)} disabled={!!receiptSharing}><Text style={styles.confirmBackText}>Ahora no</Text></TouchableOpacity>
+        </View></View>
       </Modal>
       <Modal
         visible={!!cancelConfirmOrder}
@@ -840,6 +1074,37 @@ export default function OrdersScreen() {
           </View>
         </View>
       </Modal>
+      <Modal visible={clientPickerOpen} transparent animationType="slide" onRequestClose={() => setClientPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>CLIENTES</Text><Text style={styles.selectorTitle}>Elegir cliente</Text></View><TouchableOpacity onPress={() => setClientPickerOpen(false)}><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={clientSearch} onChangeText={setClientSearch} placeholder="Buscar por nombre o CUIT" placeholderTextColor={colors.textSecondary} maxLength={40} autoCorrect={false} />{!!clientSearch && <TouchableOpacity onPress={() => setClientSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+          {canManageClients && <TouchableOpacity style={styles.newClientButton} onPress={() => { setClientPickerOpen(false); router.push({ pathname: '/(tabs)/clients/form' as any, params: { returnToOrder: '1' } }); }}><Ionicons name="person-add-outline" size={18} color={colors.primary} /><Text style={styles.newClientButtonText}>Registrar cliente nuevo</Text></TouchableOpacity>}
+          <ScrollView keyboardShouldPersistTaps="handled">{pageClients.map(client => <TouchableOpacity key={client.id} style={styles.selectorOption} onPress={() => { setClientPickerOpen(false); void chooseClient(client); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{client.businessName}</Text><Text style={styles.selectorOptionSub}>{client.taxId}</Text></View>{selectedClient?.id === client.id && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>)}{!visibleClients.length && <Text style={styles.selectorEmpty}>No se encontraron clientes con ese criterio.</Text>}</ScrollView>
+          <PaginationControls page={clientPickerPage} totalItems={visibleClients.length} onPageChange={setClientPickerPage} />
+        </View></View>
+      </Modal>
+      <Modal visible={addressPickerOpen} transparent animationType="slide" onRequestClose={() => setAddressPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>ENTREGA</Text><Text style={styles.selectorTitle}>Elegir dirección</Text></View><TouchableOpacity onPress={() => setAddressPickerOpen(false)}><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <ScrollView keyboardShouldPersistTaps="handled">{pageAddresses.map(address => <TouchableOpacity key={address.id} style={styles.selectorOption} onPress={() => { setSelectedAddress(address); setAddressPickerOpen(false); }}><View style={styles.addressPickerIcon}><Ionicons name="location-outline" size={18} color={colors.primary} /></View><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{address.label || 'Dirección'}</Text><Text style={styles.selectorOptionSub}>{address.street}{address.city ? `, ${address.city}` : ''}</Text></View>{selectedAddress?.id === address.id && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>)}
+            {addingAddress ? <View style={styles.newAddressForm}><Text style={styles.selectorOptionTitle}>Agregar dirección</Text><TextInput style={styles.historyFilterInput} value={newAddressLabel} onChangeText={setNewAddressLabel} placeholder="Nombre (opcional)" placeholderTextColor={colors.textSecondary} maxLength={40} /><TextInput style={styles.historyFilterInput} value={newAddressStreet} onChangeText={setNewAddressStreet} placeholder="Calle y altura" placeholderTextColor={colors.textSecondary} maxLength={120} /><TextInput style={styles.historyFilterInput} value={newAddressCity} onChangeText={setNewAddressCity} placeholder="Localidad (opcional)" placeholderTextColor={colors.textSecondary} maxLength={80} /><TouchableOpacity style={styles.submitButton} onPress={() => void saveNewAddress()} disabled={savingAddress}>{savingAddress ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.submitText}>Guardar dirección</Text>}</TouchableOpacity></View> : <TouchableOpacity style={styles.newAddressButton} onPress={() => setAddingAddress(true)}><Ionicons name="add-circle-outline" size={19} color={colors.primary} /><Text style={styles.newAddressButtonText}>Agregar otra dirección</Text></TouchableOpacity>}
+          </ScrollView>
+          <PaginationControls page={addressPickerPage} totalItems={addresses.length} onPageChange={setAddressPickerPage} />
+        </View></View>
+      </Modal>
+      <DatePickerCalendar visible={calendarOpen} value={deliveryDate} minDate={localToday()} title="Fecha de entrega" onSelect={date => { setDeliveryDate(date); setOrderError(null); }} onClose={() => setCalendarOpen(false)} />
+      <Modal visible={truckPickerOpen} transparent animationType="slide" onRequestClose={() => setTruckPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>ENTREGA</Text><Text style={styles.selectorTitle}>Elegir camión</Text></View><TouchableOpacity onPress={() => setTruckPickerOpen(false)}><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={truckSearch} onChangeText={setTruckSearch} placeholder="Buscar por patente o chofer" placeholderTextColor={colors.textSecondary} maxLength={40} autoCorrect={false} />{!!truckSearch && <TouchableOpacity onPress={() => setTruckSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+          <ScrollView keyboardShouldPersistTaps="handled">
+            <TouchableOpacity style={styles.selectorOption} onPress={() => { setSelectedTruckId(null); setTruckPickerOpen(false); setOrderError(null); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>Sin asignar</Text><Text style={styles.selectorOptionSub}>Pedido sin camión</Text></View>{selectedTruckId === null && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>
+            {pageTrucks.map(truck => <TouchableOpacity key={truck.id} style={styles.selectorOption} onPress={() => { setSelectedTruckId(truck.id); setTruckPickerOpen(false); setOrderError(null); }}><View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{truck.licensePlate}</Text><Text style={styles.selectorOptionSub}>{truck.driverName ?? (truck.driverId ? `Chofer ID ${truck.driverId}` : 'Sin chofer asignado')}</Text></View>{selectedTruckId === truck.id && <Ionicons name="checkmark-circle" size={21} color={colors.primary} />}</TouchableOpacity>)}
+            {!!truckSearch && !visibleTrucks.length && <Text style={styles.selectorEmpty}>No se encontraron camiones.</Text>}
+          </ScrollView>
+          <PaginationControls page={truckPickerPage} totalItems={visibleTrucks.length} onPageChange={setTruckPickerPage} />
+        </View></View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -860,12 +1125,66 @@ const styles = StyleSheet.create({
   sectionHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
   sectionTitle: { ...typography.body, fontWeight: '700', color: colors.textPrimary },
   sectionHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  disabledStep: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.background },
+  disabledStepText: { ...typography.caption, color: colors.textSecondary, flex: 1 },
+  historyFilters: { gap: spacing.sm, padding: spacing.md, marginBottom: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  historyFilterTitle: { ...typography.label, color: colors.textPrimary },
+  historyStatusFilters: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  historyStatusChip: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.full, backgroundColor: colors.surface },
+  historyStatusChipActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  historyStatusText: { ...typography.caption, color: colors.textSecondary },
+  historyStatusTextActive: { color: colors.primary, fontWeight: '700' },
+  historyDateRow: { flexDirection: 'row', gap: spacing.sm },
+  historyFilterInput: { minHeight: 42, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.sm, ...typography.caption, color: colors.textPrimary },
   successBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, marginBottom: spacing.md, borderWidth: 1, borderColor: colors.success, borderRadius: radius.md, backgroundColor: colors.successLight },
   successBannerText: { ...typography.caption, color: colors.textPrimary, flex: 1, fontWeight: '600' },
   addProductsButton: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.full, backgroundColor: colors.primaryLight },
   addProductsText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
+  pickerButton: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  pickerButtonCopy: { flex: 1, paddingVertical: spacing.sm },
+  pickerValue: { ...typography.body, color: colors.textPrimary, fontWeight: '600' },
+  pickerPlaceholder: { color: colors.textSecondary, fontWeight: '400' },
+  pickerCaption: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  selectorBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' },
+  selectorModal: { backgroundColor: colors.surface, maxHeight: '82%', borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, padding: spacing.lg },
+  selectorHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md },
+  selectorEyebrow: { ...typography.caption, color: colors.primary, letterSpacing: 1, fontWeight: '700' },
+  selectorTitle: { ...typography.subheading, color: colors.textPrimary },
+  selectorSearch: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 46, paddingHorizontal: spacing.md, marginBottom: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  selectorSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  newClientButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, padding: spacing.md, marginBottom: spacing.sm, borderRadius: radius.md, backgroundColor: colors.primaryLight },
+  newClientButtonText: { ...typography.label, color: colors.primary },
+  selectorOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 58, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  selectorOptionCopy: { flex: 1 },
+  selectorOptionTitle: { ...typography.label, color: colors.textPrimary },
+  selectorOptionSub: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  selectorEmpty: { ...typography.body, color: colors.textSecondary, textAlign: 'center', padding: spacing.xl },
+  calendarBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg, backgroundColor: 'rgba(0,0,0,0.45)' },
+  calendarModal: { width: '100%', maxWidth: 380, padding: spacing.lg, borderRadius: radius.lg, backgroundColor: colors.surface },
+  calendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.lg },
+  calendarHeading: { flex: 1, alignItems: 'center' },
+  calendarEyebrow: { ...typography.caption, color: colors.textSecondary, letterSpacing: 0.8, fontWeight: '700' },
+  calendarMonth: { ...typography.subheading, color: colors.textPrimary, textTransform: 'capitalize', marginTop: 2 },
+  calendarArrow: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm, backgroundColor: colors.primaryLight },
+  calendarArrowDisabled: { backgroundColor: colors.background },
+  calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  calendarWeekday: { width: '14.2857%', textAlign: 'center', paddingVertical: spacing.sm, ...typography.caption, color: colors.textSecondary, fontWeight: '700' },
+  calendarDayCell: { width: '14.2857%', height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: radius.full },
+  calendarDaySelected: { backgroundColor: colors.primary },
+  calendarDayDisabled: { opacity: 0.35 },
+  calendarDayText: { ...typography.body, color: colors.textPrimary },
+  calendarDayTextSelected: { color: colors.textInverse, fontWeight: '800' },
+  calendarDayTextDisabled: { color: colors.textDisabled },
+  calendarTodayButton: { alignSelf: 'center', paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, marginTop: spacing.md, borderRadius: radius.full, backgroundColor: colors.primaryLight },
+  calendarTodayText: { ...typography.label, color: colors.primary },
   loader: { paddingVertical: spacing.lg },
   addressOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
+  newAddressForm: { gap: spacing.sm, padding: spacing.md, marginTop: spacing.sm, borderRadius: radius.md, backgroundColor: colors.background },
+  newAddressButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, marginTop: spacing.xs, borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md },
+  newAddressButtonText: { ...typography.label, color: colors.primary, fontWeight: '700' },
+  addressPickerButton: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.primary, borderRadius: radius.md },
+  addressPickerIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primaryLight, borderRadius: radius.sm },
+  changeAddressText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
   addressOptionActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
   addressTextWrap: { flex: 1 },
   addressLabel: { ...typography.label, color: colors.textPrimary },
@@ -874,6 +1193,15 @@ const styles = StyleSheet.create({
   optionalLabel: { ...typography.caption, color: colors.textSecondary, fontWeight: '400' },
   dateLabel: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', marginBottom: spacing.xs },
   deliveryDateInput: { ...typography.body, color: colors.textPrimary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, marginBottom: spacing.xs },
+  datePickerButton: { minHeight: 50, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  datePickerValue: { flex: 1, ...typography.body, color: colors.textPrimary, fontWeight: '700' },
+  datePickerHint: { ...typography.caption, color: colors.primary, fontWeight: '600' },
+  cartSummary: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, marginBottom: spacing.sm, borderRadius: radius.md, backgroundColor: colors.primaryLight },
+  cartSummaryCopy: { flex: 1 },
+  cartSummaryTitle: { ...typography.label, color: colors.textPrimary },
+  cartSummaryAmount: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  cartExpandButton: { flexDirection: 'row', alignItems: 'center', gap: 3, padding: spacing.xs },
+  cartExpandText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
   truckLabel: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', marginTop: spacing.md, marginBottom: spacing.sm },
   truckChoices: { gap: spacing.sm },
   truckChoice: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
@@ -912,9 +1240,13 @@ const styles = StyleSheet.create({
   orderCode: { ...typography.label, color: colors.textPrimary, fontWeight: '800' },
   orderClient: { ...typography.caption, color: colors.textSecondary, marginTop: 3 },
   statusPill: { backgroundColor: colors.warningLight, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: radius.full },
+  statusPending: { backgroundColor: colors.warningLight },
+  statusInRoute: { backgroundColor: colors.infoLight },
   statusDelivered: { backgroundColor: colors.successLight },
   statusCancelled: { backgroundColor: colors.errorLight },
   statusText: { ...typography.caption, color: colors.warning, fontSize: 10, fontWeight: '700' },
+  statusPendingText: { color: colors.warning },
+  statusInRouteText: { color: colors.info },
   statusDeliveredText: { color: colors.success },
   statusCancelledText: { color: colors.error },
   orderMeta: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
@@ -931,11 +1263,22 @@ const styles = StyleSheet.create({
   orderTotal: { ...typography.label, color: colors.primary, fontWeight: '800', marginLeft: 'auto' },
   orderActions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.md, marginTop: spacing.md },
   secondaryAction: { backgroundColor: colors.primaryLight, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  secondaryActionDisabled: { opacity: 0.5 },
   secondaryActionText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
   cancelAction: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   cancelActionText: { ...typography.caption, color: colors.error, fontWeight: '600' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(20, 12, 10, 0.48)', justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
   deliveryModal: { width: '100%', maxWidth: 460, maxHeight: '88%', backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  receiptModal: { width: '100%', maxWidth: 460, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  receiptPromptText: { ...typography.body, color: colors.textPrimary, marginTop: spacing.md, marginBottom: spacing.sm },
+  receiptSuccessText: { ...typography.caption, color: colors.success, fontWeight: '700', marginTop: spacing.md },
+  receiptChannelButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 62, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  receiptChannelCopy: { flex: 1 },
+  receiptChannelTitle: { ...typography.label, color: colors.textPrimary, fontWeight: '700' },
+  receiptChannelTarget: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  receiptNoContact: { ...typography.caption, color: colors.textSecondary, paddingVertical: spacing.sm },
+  receiptHint: { ...typography.caption, color: colors.textSecondary, lineHeight: 18, marginTop: spacing.md },
+  receiptDismiss: { alignItems: 'center', paddingVertical: spacing.md, marginTop: spacing.xs },
   deliveryHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
   deliveryBody: { paddingTop: spacing.md, paddingBottom: spacing.xs },
   deliveryTotalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.primaryLight },
@@ -949,6 +1292,11 @@ const styles = StyleSheet.create({
   deliveryChoiceTitle: { ...typography.label, color: colors.textPrimary },
   deliveryChoiceSubtitle: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   deliveryAmountField: { marginTop: spacing.sm, marginBottom: spacing.sm },
+  paymentMethods: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginBottom: spacing.sm },
+  paymentMethod: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.full, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface },
+  paymentMethodActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  paymentMethodText: { ...typography.caption, color: colors.textSecondary },
+  paymentMethodTextActive: { color: colors.primary, fontWeight: '700' },
   deliveryAmountLabel: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', marginBottom: spacing.xs },
   deliveryAmountInput: { ...typography.body, color: colors.textPrimary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
   deliveryAmountHint: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.xs },

@@ -12,6 +12,8 @@ export interface ManagedUser {
 export interface ManagedRole {
   id: string;
   name: string;
+  description: string;
+  permissions: { code: string; name: string; description: string }[];
 }
 
 export interface UserWriteRequest {
@@ -58,7 +60,17 @@ function toUser(dto: RawUser): ManagedUser {
 }
 
 function toRole(dto: RawUser): ManagedRole {
-  return { id: String(dto.id ?? dto.roleId ?? ''), name: String(dto.name ?? dto.roleName ?? dto.authority ?? '') };
+  const rawPermissions = dto.permissions ?? dto.authorities ?? dto.permissionList ?? [];
+  return {
+    id: String(dto.id ?? dto.roleId ?? ''),
+    name: String(dto.name ?? dto.roleName ?? dto.authority ?? ''),
+    description: String(dto.description ?? dto.detail ?? ''),
+    permissions: Array.isArray(rawPermissions) ? rawPermissions.map((item: any) => ({
+      code: String(typeof item === 'string' ? item : item.code ?? item.name ?? item.permission ?? ''),
+      name: String(typeof item === 'string' ? item : item.name ?? item.label ?? item.code ?? ''),
+      description: String(typeof item === 'string' ? '' : item.description ?? item.detail ?? ''),
+    })).filter((permission: { code: string }) => permission.code) : [],
+  };
 }
 
 export const usersService = {

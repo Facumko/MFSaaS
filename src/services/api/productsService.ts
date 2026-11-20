@@ -99,11 +99,10 @@ export const productsService = {
     let items = products.map((dto) => toIProduct(dto, categories));
 
     if (search.trim()) {
-      const query = search.trim().toLocaleLowerCase();
+      const query = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
       items = items.filter(
         (product) =>
-          product.name.toLocaleLowerCase().includes(query) ||
-          product.description.toLocaleLowerCase().includes(query),
+          product.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(query),
       );
     }
     if (categoryIds.length) {

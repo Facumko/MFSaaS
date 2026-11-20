@@ -1,18 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
     ActivityIndicator,
     RefreshControl,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { clientsService } from '../../../services/api/clientsService';
+import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { IDebtor } from '../../../types';
 import { usePermissions } from '../../../hooks/usePermissions';
@@ -25,13 +28,10 @@ export default function DebtorsScreen() {
   const [debtors, setDebtors] = useState<IDebtor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    if (!canViewClients) router.replace('/(tabs)/profile' as any);
-    else fetchDebtors();
-  }, [canViewClients, router]);
-
-  const fetchDebtors = async () => {
+  const fetchDebtors = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -42,7 +42,12 @@ export default function DebtorsScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (!canViewClients) router.replace('/(tabs)/profile' as any);
+    else void fetchDebtors();
+  }, [canViewClients, router, fetchDebtors]));
 
   const handleDebtorPress = (debtorId: string) => {
     router.push({
@@ -50,6 +55,18 @@ export default function DebtorsScreen() {
       params: { clientId: debtorId },
     });
   };
+
+  const totalDebt = debtors.reduce((sum, debtor) => sum + debtor.totalDebt, 0);
+  const visibleDebtors = useMemo(() => {
+    const query = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    if (!query) return debtors;
+    return debtors.filter(({ client }) =>
+      client.businessName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().startsWith(query) ||
+      client.taxId.startsWith(query),
+    );
+  }, [debtors, search]);
+  const pagedDebtors = useMemo(() => pageItems(visibleDebtors, page), [visibleDebtors, page]);
+  React.useEffect(() => setPage(1), [search]);
 
   const renderDebtorItem = ({ item }: { item: IDebtor }) => (
     <TouchableOpacity
@@ -100,7 +117,7 @@ export default function DebtorsScreen() {
     return (
       <View style={styles.emptyContainer}>
         <Ionicons name="checkmark-circle" size={48} color={colors.success} />
-        <Text style={styles.emptyTitle}>No hay deudores pendientes 🎉</Text>
+        <Text style={styles.emptyTitle}>No hay deudores pendientes</Text>
         <Text style={styles.emptyMessage}>
           Todos los clientes están al día con sus pagos
         </Text>
@@ -112,17 +129,48 @@ export default function DebtorsScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/clients' as any)}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Deudores</Text>
         <View style={{ width: 24 }} />
       </View>
 
+      {/* Summary Card */}
+      {debtors.length > 0 && (
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>Deuda total del negocio</Text>
+          <Text style={styles.summaryAmount}>
+            ${totalDebt.toLocaleString('es-AR')}
+          </Text>
+          <Text style={styles.summaryCount}>
+            {debtors.length} cliente{debtors.length !== 1 ? 's' : ''} con deuda
+          </Text>
+        </View>
+      )}
+
+      <View style={styles.searchContainer}>
+        <Ionicons name="search" size={20} color={colors.textSecondary} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Buscar por nombre o CUIT"
+          placeholderTextColor={colors.textSecondary}
+          value={search}
+          onChangeText={setSearch}
+          maxLength={40}
+          autoCorrect={false}
+        />
+        {!!search && (
+          <TouchableOpacity onPress={() => setSearch('')} accessibilityLabel="Borrar búsqueda">
+            <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Debtors List */}
-      {debtors.length > 0 ? (
+      {visibleDebtors.length > 0 ? (
         <FlashList
-          data={debtors}
+          data={pagedDebtors}
           renderItem={renderDebtorItem}
           keyExtractor={(item) => item.client.id}
           contentContainerStyle={styles.listContent}
@@ -135,8 +183,11 @@ export default function DebtorsScreen() {
           }
         />
       ) : (
-        renderListEmpty()
+        search && !loading && !error ? (
+          <View style={styles.emptyContainer}><Text style={styles.emptyMessage}>No se encontraron deudores con ese criterio.</Text></View>
+        ) : renderListEmpty()
       )}
+      <PaginationControls page={page} totalItems={visibleDebtors.length} onPageChange={setPage} />
     </View>
   );
 }
@@ -158,6 +209,45 @@ const styles = StyleSheet.create({
   headerTitle: {
     ...typography.heading,
     color: colors.textPrimary,
+  },
+  summaryCard: {
+    backgroundColor: colors.errorLight,
+    marginHorizontal: spacing.lg,
+    marginVertical: spacing.lg,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.error,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    height: 48,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+  },
+  searchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  summaryLabel: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginBottom: spacing.xs,
+  },
+  summaryAmount: {
+    ...typography.price,
+    color: colors.error,
+    marginBottom: spacing.xs,
+  },
+  summaryCount: {
+    ...typography.label,
+    color: colors.error,
+    fontWeight: '600',
   },
   listContent: {
     paddingHorizontal: spacing.lg,

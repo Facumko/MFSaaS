@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Controller, useFieldArray, useForm } from 'react-hook-form';
 import {
+    Alert,
     ActivityIndicator,
     ScrollView,
     StyleSheet,
@@ -33,7 +34,20 @@ export default function ClientFormScreen() {
   const insets = useSafeAreaInsets();
   const { canManageClients } = usePermissions();
   useEffect(() => { if (!canManageClients) router.replace('/(tabs)/clients' as any); }, [canManageClients, router]);
-  const { clientId } = useLocalSearchParams<{ clientId?: string }>();
+  const { clientId, returnToOrder } = useLocalSearchParams<{ clientId?: string; returnToOrder?: string }>();
+  const formatTaxId = (input: string) => {
+    const rawDigits = input.replace(/\D/g, '');
+    if (rawDigits.length > 11) Alert.alert('Límite alcanzado', 'El CUIT admite 11 números.');
+    const digits = rawDigits.slice(0, 11);
+    if (digits.length <= 2) return digits;
+    if (digits.length <= 10) return `${digits.slice(0, 2)}-${digits.slice(2)}`;
+    return `${digits.slice(0, 2)}-${digits.slice(2, 10)}-${digits.slice(10)}`;
+  };
+  const goBack = () => {
+    if (returnToOrder === '1') router.replace('/(tabs)/orders' as any);
+    else if (clientId) router.replace({ pathname: '/(tabs)/clients/[clientId]' as any, params: { clientId } });
+    else router.replace('/(tabs)/clients' as any);
+  };
   
   const [loading, setLoading] = useState(!!clientId);
   const [submitting, setSubmitting] = useState(false);
@@ -120,6 +134,23 @@ export default function ClientFormScreen() {
       setServerError(null);
       clearErrors();
 
+      if (!isEditMode) {
+        let page = 1;
+        let result = await clientsService.getClients('', page);
+        const existingClients = [...result.items];
+        while (existingClients.length < result.total) {
+          page += 1;
+          result = await clientsService.getClients('', page);
+          if (!result.items.length) break;
+          existingClients.push(...result.items);
+        }
+        const taxIdDigits = data.taxId.replace(/\D/g, '');
+        if (existingClients.some(existing => existing.taxId.replace(/\D/g, '') === taxIdDigits)) {
+          setError('taxId', { type: 'validate', message: 'Ya existe un cliente con ese CUIT.' });
+          return;
+        }
+      }
+
       const addresses: IAddress[] = data.addresses.map(address => ({
         id: address.id,
         street: address.street.trim(),
@@ -143,10 +174,14 @@ export default function ClientFormScreen() {
         await clientsService.updateClient(clientId, clientData);
       } else {
         // Create
-        await clientsService.createClient(clientData);
+        const created = await clientsService.createClient(clientData);
+        if (returnToOrder === '1' && created.id) {
+          router.replace({ pathname: '/(tabs)/orders' as any, params: { newClientId: created.id } });
+          return;
+        }
       }
 
-      router.back();
+      goBack();
     } catch (err) {
       const parsed = parseApiError(err, 'No se pudo guardar el cliente. Revisá los datos e intentá de nuevo.');
       const backendFields = { ...parsed.fields, ...(parsed.fields.name ? { businessName: parsed.fields.name } : {}) };
@@ -187,7 +222,7 @@ export default function ClientFormScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={goBack}>
           <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>
@@ -209,18 +244,17 @@ export default function ClientFormScreen() {
             <Controller
               control={control}
               name="businessName"
-              rules={{ required: 'Ingresá la razón social.', validate: value => !!value.trim() || 'La razón social no puede estar vacía.', minLength: { value: 2, message: 'Usá al menos 2 caracteres.' }, maxLength: { value: 120, message: 'No puede superar 120 caracteres.' } }}
+              rules={{ required: 'Ingresá la razón social.', validate: value => !!value.trim() || 'La razón social no puede estar vacía.', minLength: { value: 2, message: 'Usá al menos 2 caracteres.' }, maxLength: { value: 55, message: 'No puede superar 55 caracteres.' } }}
               render={({ field: { value, onChange, onBlur, ref } }) => (
                 <TextInput
                   ref={ref}
                   style={[styles.input, errors.businessName ? styles.inputError : touchedFields.businessName && styles.inputValid]}
                   placeholder="Ej: Carnicería El Centro"
                   placeholderTextColor={colors.textSecondary}
-                  value={value}
-                  onChangeText={value => { onChange(value); setServerError(null); }}
+                  value={value ?? ''}
+                  onChangeText={value => { if (value.length > 55) Alert.alert('Límite alcanzado', 'La razón social admite hasta 55 caracteres.'); onChange(value.slice(0, 55)); setServerError(null); }}
                   onBlur={onBlur}
                   editable={!submitting}
-                  maxLength={120}
                 />
               )}
             />
@@ -242,8 +276,8 @@ export default function ClientFormScreen() {
                   style={[styles.input, errors.taxId ? styles.inputError : touchedFields.taxId && styles.inputValid]}
                   placeholder="XX-XXXXXXXX-X"
                   placeholderTextColor={colors.textSecondary}
-                  value={value}
-                  onChangeText={value => { onChange(value); setServerError(null); }}
+                  value={value ?? ''}
+                  onChangeText={value => { if (/[^\d-]/.test(value)) Alert.alert('Formato incorrecto', 'El CUIT solo puede contener números. Los guiones se agregan automáticamente.'); onChange(formatTaxId(value)); setServerError(null); }}
                   onBlur={onBlur}
                   editable={!submitting}
                   maxLength={13}
@@ -263,19 +297,18 @@ export default function ClientFormScreen() {
             <Controller
               control={control}
               name="phone"
-              rules={{ required: 'Ingresá un teléfono.', pattern: { value: /^(?=(?:.*\d){7,})[+\d\s().-]{7,20}$/, message: 'Ingresá un teléfono válido con al menos 7 dígitos.' } }}
+              rules={{ required: 'Ingresá un teléfono.', pattern: { value: /^\d{7,13}$/, message: 'Ingresá un teléfono de 7 a 13 dígitos.' } }}
               render={({ field: { value, onChange, onBlur, ref } }) => (
                 <TextInput
                   ref={ref}
                   style={[styles.input, errors.phone ? styles.inputError : touchedFields.phone && styles.inputValid]}
                   placeholder="3644123456"
                   placeholderTextColor={colors.textSecondary}
-                  value={value}
-                  onChangeText={value => { onChange(value); setServerError(null); }}
+                  value={value ?? ''}
+                  onChangeText={value => { if (/\D/.test(value)) Alert.alert('Formato incorrecto', 'El teléfono solo puede contener números.'); const digits = value.replace(/\D/g, ''); if (digits.length > 13) Alert.alert('Límite alcanzado', 'El teléfono admite hasta 13 números.'); onChange(digits.slice(0, 13)); setServerError(null); }}
                   onBlur={onBlur}
                   editable={!submitting}
-                  maxLength={20}
-                  keyboardType="phone-pad"
+                  keyboardType="number-pad"
                 />
               )}
             />
@@ -290,18 +323,17 @@ export default function ClientFormScreen() {
             <Controller
               control={control}
               name="email"
-              rules={{ required: 'Ingresá un email.', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Ingresá un email válido.' }, maxLength: { value: 254, message: 'El email es demasiado largo.' } }}
+              rules={{ required: 'Ingresá un email.', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Ingresá un email válido.' }, maxLength: { value: 90, message: 'El email no puede superar 90 caracteres.' } }}
               render={({ field: { value, onChange, onBlur, ref } }) => (
                 <TextInput
                   ref={ref}
                   style={[styles.input, errors.email ? styles.inputError : touchedFields.email && styles.inputValid]}
                   placeholder="contacto@example.com"
                   placeholderTextColor={colors.textSecondary}
-                  value={value}
-                  onChangeText={value => { onChange(value); setServerError(null); }}
+                  value={value ?? ''}
+                  onChangeText={value => { if (value.length > 90) Alert.alert('Límite alcanzado', 'El email admite hasta 90 caracteres.'); onChange(value.slice(0, 90)); setServerError(null); }}
                   onBlur={onBlur}
                   editable={!submitting}
-                  maxLength={254}
                   keyboardType="email-address"
                   autoCapitalize="none"
                 />
@@ -337,13 +369,13 @@ export default function ClientFormScreen() {
                   )}
                 </View>
 
-                <Text style={styles.label}>Etiqueta</Text>
+                <Text style={styles.label}>Nombre para identificar la dirección</Text>
                 <Controller
                   control={control}
                   name={`addresses.${index}.label`}
-                  rules={{ maxLength: { value: 80, message: 'No puede superar 80 caracteres.' } }}
+                  rules={{ maxLength: { value: 40, message: 'No puede superar 40 caracteres.' } }}
                   render={({ field: { value, onChange, onBlur, ref } }) => (
-                    <TextInput ref={ref} style={[styles.input, addressErrors?.label ? styles.inputError : addressTouched?.label && styles.inputValid]} placeholder="Casa, depósito..." placeholderTextColor={colors.textSecondary} value={value} onChangeText={text => { onChange(text); setServerError(null); }} onBlur={onBlur} editable={!submitting} maxLength={80} />
+                    <TextInput ref={ref} style={[styles.input, addressErrors?.label ? styles.inputError : addressTouched?.label && styles.inputValid]} placeholder="Casa, depósito, sucursal..." placeholderTextColor={colors.textSecondary} value={value ?? ''} onChangeText={text => { if (text.length > 40) Alert.alert('Límite alcanzado', 'El nombre para identificar la dirección admite hasta 40 caracteres.'); onChange(text.slice(0, 40)); setServerError(null); }} onBlur={onBlur} editable={!submitting} />
                   )}
                 />
                 {!!addressErrors?.label && <Text style={styles.errorText}>{addressErrors.label.message}</Text>}
@@ -352,9 +384,9 @@ export default function ClientFormScreen() {
                 <Controller
                   control={control}
                   name={`addresses.${index}.street`}
-                  rules={{ required: 'Ingresá la calle y altura.', validate: value => !!value.trim() || 'Ingresá una dirección válida.', minLength: { value: 3, message: 'Ingresá una dirección válida.' }, maxLength: { value: 255, message: 'No puede superar 255 caracteres.' } }}
+                  rules={{ required: 'Ingresá la calle y altura.', validate: value => !!value.trim() || 'Ingresá una dirección válida.', minLength: { value: 3, message: 'Ingresá una dirección válida.' }, maxLength: { value: 40, message: 'No puede superar 40 caracteres.' } }}
                   render={({ field: { value, onChange, onBlur, ref } }) => (
-                    <TextInput ref={ref} style={[styles.input, addressErrors?.street ? styles.inputError : addressTouched?.street && styles.inputValid]} placeholder="Av. San Martín 123" placeholderTextColor={colors.textSecondary} value={value} onChangeText={text => { onChange(text); setServerError(null); }} onBlur={onBlur} editable={!submitting} maxLength={255} />
+                    <TextInput ref={ref} style={[styles.input, addressErrors?.street ? styles.inputError : addressTouched?.street && styles.inputValid]} placeholder="Av. San Martín 123" placeholderTextColor={colors.textSecondary} value={value ?? ''} onChangeText={text => { if (text.length > 40) Alert.alert('Límite alcanzado', 'La calle y altura admiten hasta 40 caracteres.'); onChange(text.slice(0, 40)); setServerError(null); }} onBlur={onBlur} editable={!submitting} />
                   )}
                 />
                 {!!addressErrors?.street && <Text style={styles.errorText}>{addressErrors.street.message}</Text>}
@@ -363,9 +395,9 @@ export default function ClientFormScreen() {
                 <Controller
                   control={control}
                   name={`addresses.${index}.city`}
-                  rules={{ required: 'Ingresá la localidad.', validate: value => !!value.trim() || 'Ingresá una localidad válida.', minLength: { value: 2, message: 'Ingresá una localidad válida.' }, maxLength: { value: 100, message: 'No puede superar 100 caracteres.' } }}
+                  rules={{ required: 'Ingresá la localidad.', validate: value => !!value.trim() || 'Ingresá una localidad válida.', minLength: { value: 2, message: 'Ingresá una localidad válida.' }, maxLength: { value: 40, message: 'No puede superar 40 caracteres.' } }}
                   render={({ field: { value, onChange, onBlur, ref } }) => (
-                    <TextInput ref={ref} style={[styles.input, addressErrors?.city ? styles.inputError : addressTouched?.city && styles.inputValid]} placeholder="Presidencia Roque Sáenz Peña" placeholderTextColor={colors.textSecondary} value={value} onChangeText={text => { onChange(text); setServerError(null); }} onBlur={onBlur} editable={!submitting} maxLength={100} />
+                    <TextInput ref={ref} style={[styles.input, addressErrors?.city ? styles.inputError : addressTouched?.city && styles.inputValid]} placeholder="Presidencia Roque Sáenz Peña" placeholderTextColor={colors.textSecondary} value={value ?? ''} onChangeText={text => { if (text.length > 40) Alert.alert('Límite alcanzado', 'La localidad admite hasta 40 caracteres.'); onChange(text.slice(0, 40)); setServerError(null); }} onBlur={onBlur} editable={!submitting} />
                   )}
                 />
                 {!!addressErrors?.city && <Text style={styles.errorText}>{addressErrors.city.message}</Text>}
@@ -388,7 +420,7 @@ export default function ClientFormScreen() {
       <View style={styles.footer}>
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => router.back()}
+          onPress={goBack}
           disabled={submitting}
         >
           <Text style={styles.cancelButtonText}>Cancelar</Text>

@@ -13,26 +13,17 @@ export interface TruckWriteRequest {
   driverId?: number | null;
 }
 
-export interface TruckStockRecord {
+export interface TruckStockItem {
   id: string;
-  truckId: string;
   productId: string;
-  productName?: string;
-  deliveryDate?: string;
+  productName: string;
+  deliveryDate: string;
   quantityLoaded: number;
   quantityReturned: number;
 }
 
-export interface TruckStockLoadRequest {
-  productId: number;
-  deliveryDate?: string;
-  quantityLoaded?: number;
-}
-
-export interface TruckStockUpdateRequest {
-  quantityLoaded?: number;
-  quantityReturned?: number;
-}
+export interface TruckStockCreateRequest { productId: number; deliveryDate: string; quantityLoaded: number }
+export interface TruckStockUpdateRequest { quantityLoaded: number; quantityReturned: number }
 
 type RawObject = Record<string, any>;
 
@@ -65,16 +56,15 @@ function toTruck(dto: RawObject): Truck {
   };
 }
 
-function toTruckStock(dto: RawObject, truckId: string): TruckStockRecord {
+function toStockItem(dto: RawObject): TruckStockItem {
   const product = dto.product && typeof dto.product === 'object' ? dto.product as RawObject : {};
   return {
     id: String(dto.id ?? dto.stockId ?? ''),
-    truckId: String(dto.truckId ?? dto.truck?.id ?? truckId),
     productId: String(dto.productId ?? product.id ?? ''),
-    productName: String(dto.productName ?? product.name ?? '') || undefined,
-    deliveryDate: String(dto.deliveryDate ?? dto.date ?? '') || undefined,
-    quantityLoaded: Number(dto.quantityLoaded ?? dto.loaded ?? 0),
-    quantityReturned: Number(dto.quantityReturned ?? dto.returned ?? 0),
+    productName: String(dto.productName ?? product.name ?? dto.name ?? 'Producto'),
+    deliveryDate: String(dto.deliveryDate ?? dto.date ?? ''),
+    quantityLoaded: Number(dto.quantityLoaded ?? dto.loadedQty ?? 0),
+    quantityReturned: Number(dto.quantityReturned ?? dto.returnedQty ?? 0),
   };
 }
 
@@ -127,7 +117,23 @@ export const logisticsService = {
     return toTruckStock(unwrapOne(response.data), truckId);
   },
 
-  async deleteTruckStock(truckId: string, stockId: string): Promise<void> {
+  async deleteTruck(id: string): Promise<void> {
+    await client.delete(`/trucks/${id}`);
+  },
+  async getTruckStock(truckId: string, date?: string): Promise<TruckStockItem[]> {
+    const response = await client.get<unknown>(`/trucks/${truckId}/stock`, { params: date ? { date } : undefined });
+    return unwrapList(response.data, ['items', 'content', 'data', 'stock']).map(toStockItem);
+  },
+
+  async loadProduct(truckId: string, payload: TruckStockCreateRequest): Promise<void> {
+    await client.post(`/trucks/${truckId}/stock`, payload);
+  },
+
+  async updateStock(truckId: string, stockId: string, payload: TruckStockUpdateRequest): Promise<void> {
+    await client.put(`/trucks/${truckId}/stock/${stockId}`, payload);
+  },
+
+  async deleteStock(truckId: string, stockId: string): Promise<void> {
     await client.delete(`/trucks/${truckId}/stock/${stockId}`);
   },
 };

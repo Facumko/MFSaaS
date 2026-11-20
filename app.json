@@ -33,6 +33,7 @@
       "expo-font",
       "expo-splash-screen",
       "expo-web-browser",
+      "expo-sharing",
       "expo-secure-store",
       "expo-status-bar"
     ],

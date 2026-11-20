@@ -1,5 +1,6 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
 import {
     ActivityIndicator,
     StyleSheet,
@@ -12,9 +13,10 @@ import { useCategories } from "../../../hooks";
 import { usePermissions } from "../../../hooks/usePermissions";
 import { useCartStore } from "../../../store/cartStore";
 import { IProduct } from "../../../types";
+import { colors, spacing, typography } from "../../../theme";
 
 export default function ProductDetailScreen() {
-  const { productId } = useLocalSearchParams<{ productId: string }>();
+  const { productId, returnTo } = useLocalSearchParams<{ productId: string; returnTo?: string }>();
   const router = useRouter();
   const addItem = useCartStore((state) => state.addItem);
   const { canViewCatalog } = usePermissions();
@@ -65,11 +67,21 @@ export default function ProductDetailScreen() {
 
   const handleAddToCart = () => {
     addItem(product, qty);
-    router.back(); // Volvemos al catálogo después de agregar
+    if (returnTo === 'orders') router.replace({ pathname: '/(tabs)/catalog', params: { returnTo: 'orders', addedProduct: product.name } } as any);
+    else router.back();
+  };
+
+  const goBack = () => {
+    if (returnTo === 'orders') router.replace('/(tabs)/orders' as any);
+    else router.back();
   };
 
   return (
     <View style={styles.container}>
+      <TouchableOpacity style={styles.backButton} onPress={goBack} accessibilityLabel="Volver">
+        <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+        <Text style={styles.backText}>Volver</Text>
+      </TouchableOpacity>
       <View style={styles.card}>
         <Text style={styles.name}>{product.name}</Text>
         <Text style={styles.category}>{product.category.name}</Text>
@@ -115,6 +127,8 @@ const styles = StyleSheet.create({
     padding: 16,
     justifyContent: "center",
   },
+  backButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginBottom: spacing.md },
+  backText: { ...typography.label, color: colors.textPrimary },
   centerContainer: {
     flex: 1,
     justifyContent: "center",

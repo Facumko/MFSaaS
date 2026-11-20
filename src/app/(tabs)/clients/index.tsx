@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ClientCard } from '../../../components/cards';
+import { PaginationControls } from '../../../components/ui/PaginationControls';
 import { useClients } from '../../../hooks';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
@@ -26,7 +27,7 @@ export default function ClientsListScreen() {
   const insets = useSafeAreaInsets();
   const { canManageClients, canViewClients } = usePermissions();
   useEffect(() => { if (!canViewClients) router.replace('/(tabs)/profile' as any); }, [canViewClients, router]);
-  const { clients, loading, error, refetch, search, setSearch } = useClients(canViewClients);
+  const { clients, loading, error, refetch, search, setSearch, total, page, setPage } = useClients(canViewClients);
   const [filteredSearch, setFilteredSearch] = useState('');
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -136,6 +137,7 @@ export default function ClientsListScreen() {
           placeholderTextColor={colors.textSecondary}
           value={filteredSearch}
           onChangeText={handleSearchChange}
+          maxLength={40}
           editable={!loading}
         />
         {filteredSearch.length > 0 && (
@@ -168,6 +170,7 @@ export default function ClientsListScreen() {
       ) : (
         renderListEmpty()
       )}
+      <PaginationControls page={page} totalItems={total} onPageChange={setPage} />
 
       {/* FAB - Create Client */}
       {canManageClients && <TouchableOpacity

@@ -1,7 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from 'expo-router/react-navigation';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -13,7 +12,11 @@ import {
   View,
 } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
-import { logisticsService, Truck, TruckStockRecord } from '../../../services/api/logisticsService';
+import { DatePickerCalendar } from '../../../components/ui/DatePickerCalendar';
+import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
+import { clientsService } from '../../../services/api/clientsService';
+import { logisticsService, Truck, TruckStockItem } from '../../../services/api/logisticsService';
+import { productsService } from '../../../services/api/productsService';
 import { ApiOrderStatus, OrderListItem, salesService } from '../../../services/api/salesService';
 import { ManagedUser, usersService } from '../../../services/api/usersService';
 import { productsService } from '../../../services/api/productsService';
@@ -21,8 +24,17 @@ import { authService } from '../../../services/api/authService';
 import { SelectField } from '../../../components/ui/SelectField';
 import { useAuthStore } from '../../../store';
 import { usePermissions } from '../../../hooks/usePermissions';
+import { IProduct } from '../../../types';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
+import { formatDate } from '../../../utils/formatters';
+
+type DeleteTarget = { kind: 'truck' | 'stock'; id: string; label: string } | null;
+
+const today = () => {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
 
 const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'Cancelado' };
 const isDeliveryRole = (roleName: string, roleId?: string) => /delivery|driver|chofer|repartidor/i.test(roleName) || roleId === '4';
@@ -33,12 +45,25 @@ export default function LogisticsScreen() {
   const { canViewLogistics, canManageLogistics, canAssignTruckToDriver, canLoadTruckStock, isDelivery, isDepot } = usePermissions();
   const isDriver = isDelivery;
   const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [truckSearch, setTruckSearch] = useState('');
+  const [truckDriverFilter, setTruckDriverFilter] = useState<'all' | 'assigned' | 'unassigned'>('all');
+  const [truckPage, setTruckPage] = useState(1);
+  const [orderPage, setOrderPage] = useState(1);
+  const [stockPage, setStockPage] = useState(1);
+  const [employeePage, setEmployeePage] = useState(1);
+  const [productPage, setProductPage] = useState(1);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [employees, setEmployees] = useState<ManagedUser[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
   const [selectedTruck, setSelectedTruck] = useState<Truck | null>(null);
+  const [ordersModalOpen, setOrdersModalOpen] = useState(false);
   const [truckOrders, setTruckOrders] = useState<OrderListItem[]>([]);
+  const [stock, setStock] = useState<TruckStockItem[]>([]);
+  const [products, setProducts] = useState<IProduct[]>([]);
   const [loadingTrucks, setLoadingTrucks] = useState(true);
   const [loadingTruckOrders, setLoadingTruckOrders] = useState(false);
+  const [loadingStock, setLoadingStock] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [truckOrdersError, setTruckOrdersError] = useState<string | null>(null);
@@ -58,7 +83,32 @@ export default function LogisticsScreen() {
   const [editingTruck, setEditingTruck] = useState<Truck | null>(null);
   const [plate, setPlate] = useState('');
   const [driverId, setDriverId] = useState('');
+  const [addStockModal, setAddStockModal] = useState(false);
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [quantityToLoad, setQuantityToLoad] = useState('');
+  const [stockDate, setStockDate] = useState(today());
+  const [stockDatePickerOpen, setStockDatePickerOpen] = useState(false);
+  const [editingStock, setEditingStock] = useState<TruckStockItem | null>(null);
+  const [editLoaded, setEditLoaded] = useState('');
+  const [editReturned, setEditReturned] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
 
+  const visibleTrucks = useMemo(() => {
+    const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
+    const query = normalize(truckSearch.trim());
+    return trucks.filter(truck =>
+      (truckDriverFilter === 'all' || (truckDriverFilter === 'assigned' ? Boolean(truck.driverId || truck.driverName) : !truck.driverId && !truck.driverName)) &&
+      (!query ||
+      normalize(truck.licensePlate).includes(query) ||
+      normalize(truck.driverName ?? '').includes(query)),
+    );
+  }, [truckSearch, truckDriverFilter, trucks]);
+  const pageTrucks = useMemo(() => pageItems(visibleTrucks, truckPage), [visibleTrucks, truckPage]);
+  const pageTruckOrders = useMemo(() => pageItems(truckOrders, orderPage), [truckOrders, orderPage]);
+  const pageStock = useMemo(() => pageItems(stock, stockPage), [stock, stockPage]);
+  const pageEmployees = useMemo(() => pageItems(employees, employeePage), [employees, employeePage]);
+  const pageProducts = useMemo(() => pageItems(products, productPage), [products, productPage]);
+  useEffect(() => setTruckPage(1), [truckSearch, truckDriverFilter]);
   useEffect(() => { if (!canViewLogistics) router.replace('/(tabs)/catalog' as any); }, [canViewLogistics, router]);
 
   const loadTrucks = useCallback(async () => {
@@ -83,25 +133,30 @@ export default function LogisticsScreen() {
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmployees(true);
-    try { setEmployees((await usersService.getUsers()).filter(user => user.active && isDeliveryRole(user.roleName, user.roleId))); }
+    try { setEmployees((await usersService.getUsers()).filter(user => user.active && /repartidor|delivery/i.test(user.roleName))); setEmployeePage(1); }
     catch { setEmployees([]); }
     finally { setLoadingEmployees(false); }
   }, []);
 
-  useFocusEffect(useCallback(() => {
-    if (!isDriver || !user?.username) return;
-    void authService.getCurrentUser(user.username).then(profile => useAuthStore.getState().updateUser(profile)).catch(() => {
-      // Mantener el perfil actual si el refresh de /auth/me falla temporalmente.
-    });
-  }, [isDriver, user?.username]));
+  const loadStock = useCallback(async (truck: Truck, date?: string) => {
+    setLoadingStock(true);
+    setError(null);
+    try { setStock(await logisticsService.getTruckStock(truck.id, date)); setStockPage(1); }
+    catch (err) { setError(parseApiError(err, 'No se pudo consultar el stock del camión.').message); setStock([]); }
+    finally { setLoadingStock(false); }
+  }, []);
 
   const loadTruckOrders = useCallback(async (truck: Truck) => {
     setLoadingTruckOrders(true);
     setTruckOrdersError(null);
     try {
       const truckId = Number(truck.id);
-      if (!Number.isInteger(truckId) || truckId < 1) throw new Error('El camión no tiene un ID válido del backend.');
-      setTruckOrders(await salesService.getOrdersByTruck(truckId));
+      if (!Number.isInteger(truckId) || truckId < 1) throw new Error('No se pudo identificar el camión seleccionado. Actualizá la pantalla e intentá de nuevo.');
+      setExpandedOrderId(null); setOrderPage(1);
+      const [orders, firstClientPage] = await Promise.all([salesService.getOrdersByTruck(truckId), clientsService.getClients('', 1)]);
+      const clientPages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(firstClientPage.total / 10) - 1) }, (_, index) => clientsService.getClients('', index + 2)));
+      const customerNames = new Map<string, string>([firstClientPage, ...clientPages].flatMap(page => page.items).map(client => [client.id, client.businessName] as const));
+      setTruckOrders(orders.map(order => ({ ...order, customerName: order.customerName && order.customerName !== 'Cliente' ? order.customerName : customerNames.get(order.customerId ?? '') || 'Cliente sin identificar' })));
     } catch (err) {
       setTruckOrdersError(parseApiError(err, 'No se pudieron cargar los pedidos de este camión.').message);
       setTruckOrders([]);
@@ -125,8 +180,10 @@ export default function LogisticsScreen() {
 
   const selectTruck = (truck: Truck) => {
     setSelectedTruck(truck);
+    setOrdersModalOpen(true);
+    setExpandedOrderId(null); setOrderPage(1); setStockPage(1);
     void loadTruckOrders(truck);
-    if (canLoadTruckStock) void loadTruckStock(truck);
+    void loadStock(truck, stockDate);
   };
 
   useEffect(() => {
@@ -197,31 +254,81 @@ export default function LogisticsScreen() {
     } finally { setSaving(false); }
   };
 
-  const loadStockProduct = async () => {
-    if (!canLoadTruckStock || !selectedTruck) return;
-    const productId = Number(selectedStockProductId);
-    const quantityLoaded = Number(stockQuantity.replace(',', '.'));
-    if (!Number.isInteger(productId) || productId < 1) { setStockError('Elegí un producto.'); return; }
-    if (!Number.isFinite(quantityLoaded) || quantityLoaded <= 0) { setStockError('Ingresá una cantidad mayor a cero.'); return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(stockDate)) { setStockError('Ingresá una fecha válida con formato AAAA-MM-DD.'); return; }
-    setSavingStock(true);
-    setStockError(null);
+  const openAddStock = async () => {
+    if (!selectedTruck) return;
+    setError(null);
+    setAddStockModal(true);
+    setLoadingProducts(true);
     try {
-      await logisticsService.loadTruckProduct(selectedTruck.id, { productId, deliveryDate: stockDate, quantityLoaded });
-      setStockQuantity('');
-      await loadTruckStock(selectedTruck);
+      const result = await productsService.getProducts();
+      setProducts(result.items.filter(product => product.active));
+      setProductPage(1);
     } catch (err) {
-      setStockError(parseApiError(err, 'No se pudo cargar el producto en el camión.').message);
-    } finally { setSavingStock(false); }
+      setError(parseApiError(err, 'No se pudieron cargar los productos.').message);
+    } finally { setLoadingProducts(false); }
   };
 
-  const toggleTruck = async (truck: Truck) => {
+  const addStock = async () => {
+    if (!selectedTruck || !selectedProductId) { setError('Seleccioná un producto.'); return; }
+    const quantity = Number(quantityToLoad);
+    if (!Number.isInteger(quantity) || quantity < 1) { setError('La cantidad a cargar debe ser un número entero mayor a cero.'); return; }
+    const productId = Number(selectedProductId);
+    if (!Number.isInteger(productId) || productId < 1) { setError('No se pudo identificar el producto seleccionado. Actualizá la pantalla e intentá de nuevo.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(stockDate) || Number.isNaN(Date.parse(`${stockDate}T00:00:00`))) { setError('Seleccioná una fecha de reparto válida.'); return; }
     setSaving(true);
     setError(null);
     try {
-      if (truck.active) await logisticsService.deactivateTruck(truck.id);
-      else await logisticsService.activateTruck(truck.id);
-      await loadTrucks();
+      await logisticsService.loadProduct(selectedTruck.id, { productId, deliveryDate: stockDate, quantityLoaded: quantity });
+      setAddStockModal(false);
+      setQuantityToLoad('');
+      setSelectedProductId('');
+      await loadStock(selectedTruck, stockDate);
+    } catch (err) {
+      setError(parseApiError(err, 'No se pudo cargar el producto en el camión.').message);
+    } finally { setSaving(false); }
+  };
+
+  const openEditStock = (item: TruckStockItem) => {
+    setEditingStock(item);
+    setEditLoaded(String(item.quantityLoaded));
+    setEditReturned(String(item.quantityReturned));
+    setError(null);
+  };
+
+  const saveStockEdit = async () => {
+    if (!editingStock) return;
+    const loaded = Number(editLoaded);
+    const returned = Number(editReturned);
+    if (!Number.isInteger(loaded) || loaded < 0 || !Number.isInteger(returned) || returned < editingStock.quantityReturned || returned > loaded) {
+      setError('La devolución debe ser una cantidad entera, no puede reducir lo ya registrado ni superar lo cargado.'); return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const truck = selectedTruck;
+      if (!truck) throw new Error('Seleccioná un camión para actualizar su stock.');
+      await logisticsService.updateStock(truck.id, editingStock.id, { quantityLoaded: loaded, quantityReturned: returned });
+      setEditingStock(null);
+      if (truck) await loadStock(truck, stockDate);
+    } catch (err) {
+      setError(parseApiError(err, 'No se pudo actualizar el stock.').message);
+    } finally { setSaving(false); }
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setSaving(true);
+    setError(null);
+    try {
+      if (deleteTarget.kind === 'truck') {
+        await logisticsService.deleteTruck(deleteTarget.id);
+        if (selectedTruck?.id === deleteTarget.id) { setSelectedTruck(null); setTruckOrders([]); }
+        await loadTrucks();
+      } else {
+        if (!selectedTruck) throw new Error('Seleccioná un camión para eliminar stock.');
+        await logisticsService.deleteStock(selectedTruck.id, deleteTarget.id);
+        if (selectedTruck) await loadStock(selectedTruck, stockDate);
+      }
+      setDeleteTarget(null);
     } catch (err) {
       setError(parseApiError(err, 'No se pudo cambiar el estado del camión.').message);
     } finally { setSaving(false); }
@@ -234,14 +341,35 @@ export default function LogisticsScreen() {
         <View style={styles.headerIcon}><Ionicons name="bus-outline" size={24} color={colors.primary} /></View>
       </View>
 
-      {!!error && <FormErrorBanner message={error} onRetry={() => void loadTrucks()} />}
+      {!isDriver && <TouchableOpacity style={styles.assignOrdersButton} onPress={() => router.push('/logistics-orders' as any)} accessibilityRole="button">
+        <View style={styles.assignOrdersCopy}><Text style={styles.assignOrdersTitle}>Asignar pedidos</Text><Text style={styles.assignOrdersHint}>Elegí un pedido pendiente y el camión que lo repartirá.</Text></View>
+        <Ionicons name="chevron-forward" size={19} color={colors.primary} />
+      </TouchableOpacity>}
+
+      {!!error && <FormErrorBanner message={error} onRetry={() => selectedTruck ? loadStock(selectedTruck, stockDate) : loadTrucks()} />}
 
       <View style={styles.sectionHeader}>
         <View><Text style={styles.sectionTitle}>Flota</Text><Text style={styles.sectionHint}>{trucks.length} {trucks.length === 1 ? 'camión' : 'camiones'} registrados</Text></View>
         {canManageLogistics && <TouchableOpacity style={styles.primarySmallButton} onPress={() => openTruckForm()}><Ionicons name="add" size={18} color={colors.textInverse} /><Text style={styles.primarySmallText}>Agregar</Text></TouchableOpacity>}
       </View>
 
-      {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? trucks.map(truck => (
+      {!!trucks.length && <View style={styles.truckSearchBox}>
+        <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
+        <TextInput
+          style={styles.truckSearchInput}
+          value={truckSearch}
+          onChangeText={setTruckSearch}
+          placeholder="Buscar camión por patente o chofer"
+          placeholderTextColor={colors.textSecondary}
+          maxLength={40}
+          autoCorrect={false}
+        />
+        {!!truckSearch && <TouchableOpacity onPress={() => setTruckSearch('')} accessibilityLabel="Borrar búsqueda de camiones"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}
+      </View>}
+
+      {!!trucks.length && <View style={styles.fleetFilters}>{([['all', 'Todos'], ['assigned', 'Con chofer'], ['unassigned', 'Sin chofer']] as const).map(([value, label]) => <TouchableOpacity key={value} style={[styles.fleetFilter, truckDriverFilter === value && styles.fleetFilterActive]} onPress={() => setTruckDriverFilter(value)}><Text style={[styles.fleetFilterText, truckDriverFilter === value && styles.fleetFilterTextActive]}>{label}</Text></TouchableOpacity>)}</View>}
+
+      {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageTrucks.length ? pageTrucks.map(truck => (
         <View key={truck.id} style={[styles.truckCard, selectedTruck?.id === truck.id && styles.truckCardSelected]}>
           <TouchableOpacity style={styles.truckMain} onPress={() => selectTruck(truck)}>
             <View style={styles.truckIcon}><Ionicons name="bus" size={20} color={colors.primary} /></View>
@@ -255,34 +383,44 @@ export default function LogisticsScreen() {
           </View>}
           {canAssignTruckToDriver && truck.active && <TouchableOpacity style={styles.assignDriverButton} onPress={() => { setDriverAssignmentTruck(truck); setError(null); }} disabled={saving}><Ionicons name="person-add-outline" size={17} color={colors.primary} /><Text style={styles.assignDriverText}>{truck.driverId ? 'Cambiar chofer' : 'Asignar chofer'}</Text></TouchableOpacity>}
         </View>
-      )) : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? user?.truckId ? 'No se encontró tu camión asignado' : 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? user?.truckId ? 'Actualizá la lista o contactá a Depósito o Admin.' : 'Solicitá a Depósito o Admin que te asignen un camión.' : isDepot ? 'Cuando haya camiones activos, podés asignar choferes y pedidos desde esta pantalla.' : 'Agregá un camión para asignar pedidos y choferes.'}</Text></View>}
+      )) : (truckSearch.trim() || truckDriverFilter !== 'all') && trucks.length ? <View style={styles.emptyCard}><Text style={styles.emptyText}>No hay camiones en esta selección.</Text></View> : <View style={styles.emptyCard}><Ionicons name="bus-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{isDriver ? 'No tenés un camión asignado' : 'Todavía no hay camiones'}</Text><Text style={styles.emptyText}>{isDriver ? 'Pedile a un administrador que asigne tu usuario a un camión.' : 'Agregá un camión para asignar pedidos y gestionar stock.'}</Text></View>}
+      <PaginationControls page={truckPage} totalItems={visibleTrucks.length} onPageChange={setTruckPage} />
 
-      {selectedTruck && <View style={styles.truckOrdersSection}>
-        <View style={styles.ordersHeader}>
-          <View><Text style={styles.sectionTitle}>Pedidos de {selectedTruck.licensePlate}</Text><Text style={styles.sectionHint}>Pedidos asignados y sus productos</Text></View>
-          <TouchableOpacity style={styles.refreshOrders} onPress={() => void loadTruckOrders(selectedTruck)} disabled={loadingTruckOrders}><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.refreshText}>Actualizar</Text></TouchableOpacity>
+      {selectedTruck && <View style={styles.stockSection}>
+        <View style={styles.sectionHeader}>
+          <View><Text style={styles.sectionTitle}>Stock de {selectedTruck.licensePlate}</Text><Text style={styles.sectionHint}>Cargado para la fecha seleccionada</Text></View>
+          {canManageLogistics && <TouchableOpacity style={styles.primarySmallButton} onPress={() => void openAddStock()}><Ionicons name="add" size={18} color={colors.textInverse} /><Text style={styles.primarySmallText}>Cargar</Text></TouchableOpacity>}
         </View>
-        {!!truckOrdersError && <FormErrorBanner message={truckOrdersError} onRetry={() => void loadTruckOrders(selectedTruck)} />}
-        {loadingTruckOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : truckOrders.length ? truckOrders.map(order => (
-          <View key={order.id || order.code} style={styles.assignedOrderCard}>
-            <View style={styles.assignedOrderHeader}><View style={styles.assignedOrderInfo}><Text style={styles.assignedOrderCode}>{order.code}</Text><Text style={styles.assignedOrderCustomer}>{order.customerName}</Text></View><View style={styles.orderStatusPill}><Text style={styles.orderStatusText}>{orderStatusLabel[order.status] ?? order.status}</Text></View></View>
-            {order.items?.length ? order.items.map((item, index) => <View key={`${item.productId}-${index}`} style={styles.assignedProductRow}><Ionicons name="cube-outline" size={15} color={colors.textSecondary} /><Text style={styles.assignedProductName}>{item.productName}</Text><Text style={styles.assignedProductQty}>× {item.quantity}</Text></View>) : <Text style={styles.noOrderItems}>El backend informó {order.itemCount} unidades, pero no devolvió el detalle de productos.</Text>}
+        <TouchableOpacity style={styles.dateCard} onPress={() => setStockDatePickerOpen(true)}><Ionicons name="calendar-outline" size={17} color={colors.primary} /><Text style={styles.dateCaption}>Fecha de reparto</Text><Text style={styles.dateInput}>{formatDate(stockDate)}</Text><Ionicons name="chevron-down" size={17} color={colors.primary} /></TouchableOpacity>
+        <TouchableOpacity style={styles.refreshOrders} onPress={() => void loadStock(selectedTruck, stockDate)}><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.refreshText}>Actualizar stock</Text></TouchableOpacity>
+        {loadingStock ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageStock.length ? pageStock.map(item => <View key={item.id} style={styles.stockCard}>
+          <View style={styles.stockTop}><View style={styles.stockProductIcon}><Ionicons name="cube-outline" size={17} color={colors.primary} /></View><View style={styles.stockNameWrap}><Text style={styles.stockName}>{item.productName}</Text><Text style={styles.stockDate}>{formatDate(item.deliveryDate || stockDate)}</Text></View>
+            {canManageLogistics && <><TouchableOpacity onPress={() => openEditStock(item)} style={styles.iconButton}><Ionicons name="create-outline" size={18} color={colors.primary} /></TouchableOpacity><TouchableOpacity onPress={() => setDeleteTarget({ kind: 'stock', id: item.id, label: item.productName })} style={styles.iconButton}><Ionicons name="trash-outline" size={18} color={colors.error} /></TouchableOpacity></>}
           </View>
-        )) : <View style={styles.emptyTruckOrders}><Text style={styles.emptyText}>Este camión todavía no tiene pedidos asignados.</Text></View>}
-
+          <View style={styles.stockStats}><Text style={styles.stockStat}>Cargado <Text style={styles.stockNumber}>{item.quantityLoaded}</Text></Text><Text style={styles.stockStat}>Devuelto <Text style={styles.stockNumber}>{item.quantityReturned}</Text></Text><Text style={styles.remainingStat}>Disponible <Text style={styles.remainingNumber}>{Math.max(0, item.quantityLoaded - item.quantityReturned)}</Text></Text></View>
+        </View>) : <View style={styles.emptyTruckOrders}><Text style={styles.emptyText}>No hay carga registrada para este camión y fecha.</Text></View>}
+        <PaginationControls page={stockPage} totalItems={stock.length} onPageChange={setStockPage} />
       </View>}
 
-      {selectedTruck && canLoadTruckStock && <View style={styles.stockSection}>
-        <View style={styles.ordersHeader}><View><Text style={styles.sectionTitle}>Stock de {selectedTruck.licensePlate}</Text><Text style={styles.sectionHint}>Carga de productos para el reparto</Text></View><TouchableOpacity style={styles.refreshOrders} onPress={() => void loadTruckStock(selectedTruck)} disabled={loadingStock}><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.refreshText}>Actualizar</Text></TouchableOpacity></View>
-        {!!stockError && <FormErrorBanner message={stockError} onRetry={() => void loadTruckStock(selectedTruck)} disabled={loadingStock || savingStock} />}
-        <View style={styles.stockForm}>
-          <SelectField options={stockProducts.map(product => ({ value: product.id, label: `${product.name} · ${product.unit}` }))} value={selectedStockProductId} onChange={setSelectedStockProductId} placeholder="Seleccioná un producto" searchPlaceholder="Buscar producto..." disabled={loadingStock || savingStock} />
-          <TextInput value={stockQuantity} onChangeText={setStockQuantity} style={styles.input} placeholder="Cantidad a cargar" keyboardType="decimal-pad" editable={!savingStock} />
-          <TextInput value={stockDate} onChangeText={setStockDate} style={styles.input} placeholder="AAAA-MM-DD" maxLength={10} editable={!savingStock} />
-          <TouchableOpacity style={styles.stockLoadButton} onPress={() => void loadStockProduct()} disabled={savingStock || loadingStock}>{savingStock ? <ActivityIndicator color={colors.textInverse} /> : <><Ionicons name="cube-outline" size={17} color={colors.textInverse} /><Text style={styles.primarySmallText}>Cargar al camión</Text></>}</TouchableOpacity>
-        </View>
-        {loadingStock ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : truckStock.length ? truckStock.map(record => <View key={record.id} style={styles.stockRow}><View style={styles.stockProductInfo}><Text style={styles.assignedProductName}>{record.productName ?? stockProducts.find(product => product.id === record.productId)?.name ?? `Producto #${record.productId}`}</Text><Text style={styles.sectionHint}>{record.deliveryDate ?? stockDate}</Text></View><Text style={styles.stockQuantity}>{record.quantityLoaded} cargados · {record.quantityReturned} devueltos</Text></View>) : <Text style={styles.emptyText}>Todavía no hay productos cargados para esta fecha.</Text>}
-      </View>}
+      <Modal visible={ordersModalOpen && !!selectedTruck} transparent animationType="slide" onRequestClose={() => setOrdersModalOpen(false)}>
+        <View style={styles.modalBackdrop}><View style={styles.ordersModal}>
+          <View style={styles.ordersHeader}><View><Text style={styles.sectionTitle}>Pedidos del camión</Text><Text style={styles.sectionHint}>{selectedTruck?.licensePlate} · {truckOrders.length} pedidos</Text></View><View style={styles.ordersModalActions}><TouchableOpacity style={styles.iconButton} onPress={() => selectedTruck && void loadTruckOrders(selectedTruck)} disabled={loadingTruckOrders} accessibilityLabel="Actualizar pedidos"><Ionicons name="refresh-outline" size={19} color={colors.primary} /></TouchableOpacity><TouchableOpacity style={styles.iconButton} onPress={() => setOrdersModalOpen(false)} accessibilityLabel="Cerrar pedidos"><Ionicons name="close" size={21} color={colors.textSecondary} /></TouchableOpacity></View></View>
+          {!!truckOrdersError && <FormErrorBanner message={truckOrdersError} onRetry={() => selectedTruck && void loadTruckOrders(selectedTruck)} />}
+          <ScrollView style={styles.ordersModalList} keyboardShouldPersistTaps="handled">
+            {loadingTruckOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageTruckOrders.length ? pageTruckOrders.map(order => {
+              const expanded = expandedOrderId === order.id;
+              return <View key={order.id || order.code} style={styles.assignedOrderCard}>
+                <TouchableOpacity style={styles.assignedOrderHeader} onPress={() => setExpandedOrderId(expanded ? null : order.id)} accessibilityRole="button" accessibilityState={{ expanded }}>
+                  <View style={styles.assignedOrderInfo}><Text style={styles.assignedOrderCode}>{order.code}</Text><Text style={styles.assignedOrderCustomer} numberOfLines={1}>{order.customerName}</Text><Text style={styles.assignedOrderMeta}>{order.itemCount} productos · {formatDate(order.deliveryDate || order.createdAt)}</Text></View>
+                  <View style={styles.orderStatusPill}><Text style={styles.orderStatusText}>{orderStatusLabel[order.status] ?? order.status}</Text></View><Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={17} color={colors.textSecondary} />
+                </TouchableOpacity>
+                {expanded && (order.items?.length ? order.items.map((item, index) => <View key={`${item.productId}-${index}`} style={styles.assignedProductRow}><Ionicons name="cube-outline" size={15} color={colors.textSecondary} /><Text style={styles.assignedProductName}>{item.productName}</Text><Text style={styles.assignedProductQty}>× {item.quantity}</Text></View>) : <Text style={styles.noOrderItems}>El pedido contiene {order.itemCount} productos. No se pudo cargar el detalle.</Text>)}
+              </View>;
+            }) : <View style={styles.emptyTruckOrders}><Text style={styles.emptyText}>Este camión todavía no tiene pedidos asignados.</Text></View>}
+          </ScrollView>
+          <PaginationControls page={orderPage} totalItems={truckOrders.length} onPageChange={setOrderPage} />
+        </View></View>
+      </Modal>
 
       <Modal visible={truckModal} transparent animationType="fade" onRequestClose={() => setTruckModal(false)}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard}>
@@ -290,27 +428,39 @@ export default function LogisticsScreen() {
           {!!error && <Text style={styles.modalError}>{error}</Text>}
           <Text style={styles.inputLabel}>Patente</Text><TextInput value={plate} onChangeText={setPlate} style={styles.input} placeholder="ABC 123" autoCapitalize="characters" maxLength={20} editable={!saving} />
           <Text style={styles.inputLabel}>Chofer o empleado <Text style={styles.optional}>(opcional)</Text></Text>
-          {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : employees.length ? <ScrollView style={styles.employeePicker} nestedScrollEnabled>
-            <TouchableOpacity style={[styles.employeeChoice, !driverId && styles.employeeChoiceSelected]} onPress={() => setDriverId('')} disabled={saving}><Text style={[styles.employeeChoiceText, !driverId && styles.employeeChoiceTextSelected]}>Sin asignar</Text></TouchableOpacity>
-            {employees.filter(employee => !trucks.some(truck => truck.active && truck.id !== editingTruck?.id && truck.driverId === employee.id)).map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, driverId === employee.id && styles.employeeChoiceSelected]} onPress={() => setDriverId(employee.id)} disabled={saving}><Text style={[styles.employeeChoiceText, driverId === employee.id && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : employee.roleId ? ` · Rol ${employee.roleId}` : ''}</Text></TouchableOpacity>)}
-          </ScrollView> : <View><Text style={styles.modalDescription}>No hay empleados disponibles para asignar.</Text><TouchableOpacity onPress={() => void loadEmployees()}><Text style={styles.refreshText}>Reintentar carga de usuarios</Text></TouchableOpacity></View>}
+          {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : employees.length ? <><TouchableOpacity style={[styles.employeeChoice, !driverId && styles.employeeChoiceSelected]} onPress={() => setDriverId('')} disabled={saving}><Text style={[styles.employeeChoiceText, !driverId && styles.employeeChoiceTextSelected]}>Sin asignar</Text></TouchableOpacity><ScrollView style={styles.employeePicker} nestedScrollEnabled>
+            {pageEmployees.map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, driverId === employee.id && styles.employeeChoiceSelected]} onPress={() => setDriverId(employee.id)} disabled={saving}><Text style={[styles.employeeChoiceText, driverId === employee.id && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : ''}</Text></TouchableOpacity>)}
+          </ScrollView><PaginationControls page={employeePage} totalItems={employees.length} onPageChange={setEmployeePage} /></> : <View><Text style={styles.modalDescription}>No hay empleados disponibles para asignar.</Text><TouchableOpacity onPress={() => void loadEmployees()}><Text style={styles.refreshText}>Reintentar carga de usuarios</Text></TouchableOpacity></View>}
           <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setTruckModal(false)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void saveTruck()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Guardar</Text>}</TouchableOpacity></View>
         </View></View>
       </Modal>
 
-      <Modal visible={!!driverAssignmentTruck} transparent animationType="fade" onRequestClose={() => setDriverAssignmentTruck(null)}>
+      <Modal visible={addStockModal} transparent animationType="fade" onRequestClose={() => setAddStockModal(false)}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>Asignar chofer</Text>
-          <Text style={styles.modalDescription}>Camión {driverAssignmentTruck?.licensePlate}. El chofer verá únicamente esta unidad y sus pedidos.</Text>
-          {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <ScrollView style={styles.employeePicker} nestedScrollEnabled>
-            <TouchableOpacity style={[styles.employeeChoice, !driverAssignmentTruck?.driverId && styles.employeeChoiceSelected]} onPress={() => void saveDriverAssignment(null)} disabled={saving}><Text style={[styles.employeeChoiceText, !driverAssignmentTruck?.driverId && styles.employeeChoiceTextSelected]}>Dejar sin chofer</Text></TouchableOpacity>
-            {employees.filter(employee => !trucks.some(truck => truck.active && truck.id !== driverAssignmentTruck?.id && truck.driverId === employee.id)).map(employee => <TouchableOpacity key={employee.id} style={styles.employeeChoice} onPress={() => void saveDriverAssignment(employee.id)} disabled={saving}><Text style={styles.employeeChoiceText}>{employee.fullName || employee.email}</Text><Text style={styles.employeeRole}>{employee.email}</Text></TouchableOpacity>)}
-          </ScrollView>}
-          {!!error && <Text style={styles.modalError}>{error}</Text>}
-          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setDriverAssignmentTruck(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Cerrar</Text></TouchableOpacity></View>
+          <Text style={styles.modalTitle}>Cargar producto</Text>{!!error && <Text style={styles.modalError}>{error}</Text>}<Text style={styles.modalDescription}>Camión {selectedTruck?.licensePlate}</Text>
+          <Text style={styles.inputLabel}>Fecha de reparto</Text><TouchableOpacity style={styles.input} onPress={() => setStockDatePickerOpen(true)} disabled={saving}><Text style={styles.inputText}>{formatDate(stockDate)}</Text></TouchableOpacity>
+          <Text style={styles.inputLabel}>Producto</Text>{loadingProducts ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <><ScrollView style={styles.productPicker} nestedScrollEnabled>{pageProducts.map(product => <TouchableOpacity key={product.id} style={[styles.productChoice, selectedProductId === product.id && styles.productChoiceSelected]} onPress={() => setSelectedProductId(product.id)}><Text style={[styles.productChoiceText, selectedProductId === product.id && styles.productChoiceTextSelected]}>{product.name}</Text><Text style={styles.productUnit}>{product.unit}</Text></TouchableOpacity>)}</ScrollView><PaginationControls page={productPage} totalItems={products.length} onPageChange={setProductPage} /></>}
+          <Text style={styles.inputLabel}>Cantidad</Text><TextInput value={quantityToLoad} onChangeText={setQuantityToLoad} style={styles.input} placeholder="0" keyboardType="number-pad" editable={!saving} />
+          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setAddStockModal(false)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void addStock()} disabled={saving || loadingProducts}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Cargar</Text>}</TouchableOpacity></View>
         </View></View>
       </Modal>
 
+      <Modal visible={!!editingStock} transparent animationType="fade" onRequestClose={() => setEditingStock(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Registrar devolución</Text>{!!error && <Text style={styles.modalError}>{error}</Text>}<Text style={styles.modalDescription}>{editingStock?.productName} · Stock del camión {selectedTruck?.licensePlate}</Text>
+          <Text style={styles.inputLabel}>Cantidad cargada</Text><TextInput value={editLoaded} onChangeText={setEditLoaded} style={styles.input} keyboardType="number-pad" editable={false} />
+          <Text style={styles.inputLabel}>Cantidad devuelta acumulada</Text><TextInput value={editReturned} onChangeText={setEditReturned} style={styles.input} keyboardType="number-pad" editable={!saving} />
+          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setEditingStock(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void saveStockEdit()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Guardar</Text>}</TouchableOpacity></View>
+        </View></View>
+      </Modal>
+
+      <Modal visible={!!deleteTarget} transparent animationType="fade" onRequestClose={() => setDeleteTarget(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <View style={styles.deleteIcon}><Ionicons name="trash-outline" size={24} color={colors.error} /></View><Text style={styles.modalTitle}>{deleteTarget?.kind === 'stock' ? 'Eliminar carga' : 'Eliminar camión'}</Text><Text style={styles.modalDescription}>¿Querés eliminar {deleteTarget?.label}? Esta acción no se puede deshacer.</Text>
+          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setDeleteTarget(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.deleteButton} onPress={() => void confirmDelete()} disabled={saving}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Eliminar</Text>}</TouchableOpacity></View>
+        </View></View>
+      </Modal>
+      <DatePickerCalendar visible={stockDatePickerOpen} value={stockDate} title="Fecha de reparto" onSelect={setStockDate} onClose={() => setStockDatePickerOpen(false)} />
     </ScrollView>
   );
 }
@@ -323,9 +473,20 @@ const styles = StyleSheet.create({
   title: { ...typography.heading, color: colors.textPrimary, marginTop: 3 },
   subtitle: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.xs },
   headerIcon: { width: 48, height: 48, borderRadius: radius.md, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  assignOrdersButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, marginBottom: spacing.lg, borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface },
+  assignOrdersCopy: { flex: 1 },
+  assignOrdersTitle: { ...typography.label, color: colors.textPrimary, fontWeight: '800' },
+  assignOrdersHint: { ...typography.caption, color: colors.textSecondary, marginTop: 3, lineHeight: 17 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.md, marginTop: spacing.sm },
   sectionTitle: { ...typography.subheading, color: colors.textPrimary },
   sectionHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  truckSearchBox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 46, paddingHorizontal: spacing.md, marginBottom: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  truckSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  fleetFilters: { flexDirection: 'row', alignSelf: 'flex-start', gap: spacing.xs, marginBottom: spacing.sm },
+  fleetFilter: { paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderWidth: 1, borderColor: colors.border, borderRadius: radius.full, backgroundColor: colors.surface },
+  fleetFilterActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  fleetFilterText: { ...typography.caption, color: colors.textSecondary },
+  fleetFilterTextActive: { color: colors.primary, fontWeight: '700' },
   primarySmallButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, backgroundColor: colors.primary, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   primarySmallText: { ...typography.caption, color: colors.textInverse, fontWeight: '700' },
   loader: { paddingVertical: spacing.xl },
@@ -349,18 +510,38 @@ const styles = StyleSheet.create({
   emptyTitle: { ...typography.label, color: colors.textPrimary, marginTop: spacing.sm },
   emptyText: { ...typography.caption, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.xs },
   truckOrdersSection: { marginTop: spacing.md },
-  stockSection: { marginTop: spacing.lg, padding: spacing.md, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
-  stockForm: { gap: spacing.sm, marginBottom: spacing.md },
-  stockLoadButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, backgroundColor: colors.primary, borderRadius: radius.sm, padding: spacing.md },
-  stockRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: spacing.sm },
-  stockProductInfo: { flex: 1 },
-  stockQuantity: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', textAlign: 'right' },
+  ordersModal: { width: '100%', maxWidth: 560, maxHeight: '84%', backgroundColor: colors.background, borderRadius: radius.lg, padding: spacing.lg },
+  ordersModalActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  ordersModalList: { flexShrink: 1, marginTop: spacing.sm },
+  stockSection: { marginTop: spacing.md },
+  dateCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.xs, marginBottom: spacing.xs },
+  dateCaption: { ...typography.caption, color: colors.textSecondary, flex: 1 },
+  dateInput: { ...typography.caption, color: colors.textPrimary, textAlign: 'right', minWidth: 110, paddingVertical: spacing.sm },
+  stockCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
+  stockTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  stockProductIcon: { width: 34, height: 34, borderRadius: radius.sm, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  stockNameWrap: { flex: 1 },
+  stockName: { ...typography.label, color: colors.textPrimary },
+  stockDate: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  iconButton: { padding: spacing.xs },
+  stockStats: { flexDirection: 'row', gap: spacing.lg, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  stockStat: { ...typography.caption, color: colors.textSecondary },
+  stockNumber: { color: colors.textPrimary, fontWeight: '700' },
+  remainingStat: { ...typography.caption, color: colors.primary, marginLeft: 'auto' },
+  remainingNumber: { fontWeight: '800' },
+  productPicker: { maxHeight: 150, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, marginBottom: spacing.xs },
+  productChoice: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border },
+  productChoiceSelected: { backgroundColor: colors.primaryLight },
+  productChoiceText: { ...typography.caption, color: colors.textPrimary },
+  productChoiceTextSelected: { color: colors.primary, fontWeight: '700' },
+  productUnit: { ...typography.caption, color: colors.textSecondary },
   ordersHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm, marginTop: spacing.sm },
   assignedOrderCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
-  assignedOrderHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.xs },
+  assignedOrderHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
   assignedOrderInfo: { flex: 1 },
   assignedOrderCode: { ...typography.label, color: colors.textPrimary, fontWeight: '800' },
   assignedOrderCustomer: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  assignedOrderMeta: { ...typography.caption, color: colors.textDisabled, marginTop: 2, fontSize: 10 },
   orderStatusPill: { backgroundColor: colors.primaryLight, borderRadius: radius.full, paddingHorizontal: spacing.sm, paddingVertical: 3 },
   orderStatusText: { ...typography.caption, color: colors.primary, fontSize: 10, fontWeight: '700' },
   assignedProductRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingTop: spacing.xs },
@@ -378,6 +559,7 @@ const styles = StyleSheet.create({
   inputLabel: { ...typography.caption, color: colors.textSecondary, fontWeight: '700', marginBottom: spacing.xs, marginTop: spacing.sm },
   optional: { fontWeight: '400', color: colors.textDisabled },
   input: { ...typography.body, color: colors.textPrimary, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  inputText: { ...typography.body, color: colors.textPrimary },
   employeePicker: { maxHeight: 180, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.sm, marginBottom: spacing.md },
   employeeChoice: { paddingVertical: spacing.sm, borderBottomWidth: 1, borderColor: colors.border },
   employeeChoiceSelected: { backgroundColor: colors.primaryLight },
