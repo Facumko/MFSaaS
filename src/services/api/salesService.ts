@@ -7,6 +7,21 @@ export interface OrderDeliveryRequest {
   paymentMethod: DeliveryPaymentMethod;
   cashAmount?: number;
   transferAmount?: number;
+  amountPaid?: number;
+  idempotencyKey?: string;
+}
+
+export interface DeliveryAttempt {
+  id: string;
+  orderId: string;
+  attemptNumber: number;
+  status: 'IN_PROGRESS' | 'FAILED' | 'DELIVERED' | string;
+  failureReason?: string;
+  deliveryDate?: string;
+  attemptedAt: string;
+  completedAt?: string;
+  recordedById?: string;
+  recordedByName?: string;
 }
 
 export interface CreateOrderRequest {
@@ -25,6 +40,11 @@ export interface OrderListItem {
   customerId?: string;
   status: ApiOrderStatus;
   total: number;
+  amountPaid?: number;
+  cashAmount?: number;
+  transferAmount?: number;
+  deliveredAt?: string;
+  deliveredById?: string;
   itemCount: number;
   createdAt: string;
   deliveryDate?: string;
@@ -33,7 +53,10 @@ export interface OrderListItem {
   truckDriverName?: string;
   createdById?: string;
   createdByName?: string;
-  items?: { productId: string; productName: string; quantity: number }[];
+  deliveryAddress?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  items?: { productId: string; productName: string; quantity: number; unit?: string }[];
 }
 
 type RawOrder = Record<string, any>;
@@ -42,7 +65,7 @@ function unwrapList(payload: unknown): RawOrder[] {
   if (Array.isArray(payload)) return payload as RawOrder[];
   if (!payload || typeof payload !== 'object') return [];
   const obj = payload as Record<string, unknown>;
-  for (const key of ['items', 'content', 'data', 'orders']) {
+  for (const key of ['items', 'content', 'data', 'orders', 'attempts', 'deliveryAttempts']) {
     if (Array.isArray(obj[key])) return obj[key] as RawOrder[];
     if (obj[key] && typeof obj[key] === 'object') {
       const nested = unwrapList(obj[key]);
@@ -62,18 +85,26 @@ function unwrapOne(payload: unknown): RawOrder {
 }
 
 function toOrderListItem(order: RawOrder): OrderListItem {
-  const customer = order.customer ?? order.client ?? {};
+  const customer = order.customer ?? order.client ?? order.customerSummary ?? order.clientSummary ?? order.customerSnapshot ?? {};
+  const customerDetails = customer.customer ?? customer.client ?? customer;
+  const contactDetails = customerDetails.contact ?? customerDetails.contactInfo ?? customerDetails;
   const truck = order.truck ?? order.assignedTruck ?? order.deliveryTruck ?? {};
   const creator = order.createdBy ?? order.user ?? order.employee ?? {};
+  const address = order.deliveryAddress ?? order.address ?? order.shippingAddress ?? {};
   const rawItems = order.items ?? order.orderItems ?? order.details;
   const items = Array.isArray(rawItems) ? rawItems : [];
   return {
     id: String(order.id ?? order.orderId ?? ''),
     code: String(order.code ?? order.orderNumber ?? order.id ?? 'Pedido'),
-    customerName: String(order.customerName ?? customer.businessName ?? customer.companyName ?? customer.legalName ?? customer.razonSocial ?? customer.name ?? 'Cliente'),
+    customerName: String(order.customerName ?? order.customerBusinessName ?? order.clientBusinessName ?? order.customerLegalName ?? order.clientName ?? order.businessName ?? order.razonSocial ?? order.razon_social ?? customerDetails.businessName ?? customerDetails.business_name ?? customerDetails.companyName ?? customerDetails.legalName ?? customerDetails.razonSocial ?? customerDetails.razon_social ?? customerDetails.name ?? 'Cliente'),
     customerId: order.customerId == null && order.clientId == null && customer.id == null && customer.customerId == null ? undefined : String(order.customerId ?? order.clientId ?? customer.id ?? customer.customerId),
-    status: String(order.status ?? 'PENDING').toUpperCase() as ApiOrderStatus,
+    status: String(order.status ?? order.orderStatus ?? order.state ?? 'PENDING').toUpperCase() as ApiOrderStatus,
     total: Number(order.totalAmount ?? order.total ?? order.amount ?? 0),
+    amountPaid: Number(order.amountPaid ?? 0),
+    cashAmount: Number(order.cashAmount ?? 0),
+    transferAmount: Number(order.transferAmount ?? 0),
+    deliveredAt: String(order.deliveredAt ?? '') || undefined,
+    deliveredById: order.deliveredById == null ? undefined : String(order.deliveredById),
     itemCount: items.reduce((sum: number, item: RawOrder) => sum + Number(item.quantity ?? item.qty ?? 0), 0),
     createdAt: String(order.createdAt ?? order.createdDate ?? ''),
     deliveryDate: String(order.deliveryDate ?? '') || undefined,
@@ -82,10 +113,14 @@ function toOrderListItem(order: RawOrder): OrderListItem {
     truckId: order.truckId == null && order.assignedTruckId == null && truck.id == null && truck.truckId == null ? undefined : String(order.truckId ?? order.assignedTruckId ?? truck.id ?? truck.truckId),
     truckLicensePlate: String(order.truckLicensePlate ?? order.licensePlate ?? truck.licensePlate ?? truck.plate ?? truck.plateNumber ?? '') || undefined,
     truckDriverName: String(order.truckDriverName ?? truck.driverName ?? truck.driver?.fullName ?? truck.driver?.user?.fullName ?? truck.user?.fullName ?? '') || undefined,
+    deliveryAddress: String(order.deliveryAddressSnapshot || order.deliveryAddressDescription || order.addressSnapshot || [address.label, address.streetAddress ?? address.street ?? address.address, address.city ?? address.locality].filter(Boolean).join(', ') || '') || undefined,
+    customerEmail: String(order.customerEmail ?? order.clientEmail ?? customerDetails.email ?? customerDetails.mail ?? contactDetails.email ?? contactDetails.mail ?? order.email ?? '') || undefined,
+    customerPhone: String(order.customerPhone ?? order.clientPhone ?? customerDetails.phone ?? customerDetails.phoneNumber ?? customerDetails.mobile ?? customerDetails.cellphone ?? contactDetails.phone ?? contactDetails.phoneNumber ?? contactDetails.mobile ?? contactDetails.cellphone ?? order.phone ?? order.phoneNumber ?? '') || undefined,
     items: items.map((item: RawOrder) => ({
       productId: String(item.productId ?? item.product?.id ?? ''),
       productName: String(item.productName ?? item.product?.name ?? item.name ?? 'Producto'),
       quantity: Number(item.quantity ?? item.qty ?? 0),
+      unit: String(item.unit ?? item.product?.unit ?? '') || undefined,
     })),
   };
 }
@@ -120,11 +155,31 @@ export const salesService = {
     const response = await client.get<unknown>(`/trucks/${truckId}/orders`);
     const orders = unwrapList(response.data).map(toOrderListItem);
     const detailed = await Promise.all(orders.map(async order => {
-      if (order.items?.length || !order.id) return order;
-      try { return toOrderListItem(await this.getOrder(order.id)); }
+      if (!order.id) return order;
+      try {
+        const detail = toOrderListItem(await this.getOrder(order.id));
+        return {
+          ...order,
+          customerName: detail.customerName !== 'Cliente' ? detail.customerName : order.customerName !== 'Cliente' ? order.customerName : 'Razón social no disponible',
+          customerId: order.customerId ?? detail.customerId,
+          deliveryAddress: detail.deliveryAddress ?? order.deliveryAddress,
+          customerEmail: detail.customerEmail ?? order.customerEmail,
+          customerPhone: detail.customerPhone ?? order.customerPhone,
+          amountPaid: detail.amountPaid ?? order.amountPaid,
+          cashAmount: detail.cashAmount ?? order.cashAmount,
+          transferAmount: detail.transferAmount ?? order.transferAmount,
+          deliveredAt: detail.deliveredAt ?? order.deliveredAt,
+          deliveredById: detail.deliveredById ?? order.deliveredById,
+          itemCount: detail.items?.length ? detail.items.reduce((sum, item) => sum + item.quantity, 0) : order.itemCount,
+          items: detail.items?.length ? detail.items : order.items,
+          truckId: order.truckId ?? detail.truckId,
+        };
+      }
       catch { return order; }
     }));
-    return detailed.filter(order => order.truckId === String(truckId));
+    // The truck-specific endpoint is authoritative; include orders whose detail
+    // omits truckId, while excluding any explicit assignment to another truck.
+    return detailed.filter(order => !order.truckId || order.truckId === String(truckId));
   },
 
   async getOrder(id: string): Promise<RawOrder> {
@@ -177,6 +232,26 @@ export const salesService = {
 
   async cancelOrder(id: string): Promise<void> {
     await client.patch(`/orders/${id}/cancelled`);
+  },
+
+  async markDeliveryAttemptFailed(id: string, reason: string, idempotencyKey: string): Promise<void> {
+    await client.patch(`/orders/${id}/delivery-attempts/failed`, { reason, idempotencyKey });
+  },
+
+  async getDeliveryAttempts(id: string): Promise<DeliveryAttempt[]> {
+    const response = await client.get<unknown>(`/orders/${id}/delivery-attempts`);
+    return unwrapList(response.data).map(attempt => ({
+      id: String(attempt.id ?? ''),
+      orderId: String(attempt.orderId ?? id),
+      attemptNumber: Number(attempt.attemptNumber ?? 0),
+      status: String(attempt.status ?? '').toUpperCase(),
+      failureReason: String(attempt.failureReason ?? '') || undefined,
+      deliveryDate: String(attempt.deliveryDate ?? '') || undefined,
+      attemptedAt: String(attempt.attemptedAt ?? ''),
+      completedAt: String(attempt.completedAt ?? '') || undefined,
+      recordedById: attempt.recordedById == null ? undefined : String(attempt.recordedById),
+      recordedByName: String(attempt.recordedByName ?? '') || undefined,
+    }));
   },
 
   async deleteOrder(id: string): Promise<void> {

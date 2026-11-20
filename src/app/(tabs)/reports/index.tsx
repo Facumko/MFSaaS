@@ -4,15 +4,17 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { FormErrorBanner } from '../../../components/ui/FormErrorBanner';
 import { PaginationControls, pageItems } from '../../../components/ui/PaginationControls';
-import { reportsService, ReportGroupBy, SalesPeriodReport, TopSellingProductReport, EmployeePerformanceReport } from '../../../services/api/reportsService';
+import { DatePickerCalendar } from '../../../components/ui/DatePickerCalendar';
+import { reportsService, ReportGroupBy, SalesPeriodReport, TopSellingProductReport, EmployeePerformanceReport, DeliveryHistoryItem, SalesHistoryItem, DeliveryAttemptItem } from '../../../services/api/reportsService';
 import { salesService } from '../../../services/api/salesService';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
-import { formatDate } from '../../../utils/formatters';
+import { formatDate, formatDateTime } from '../../../utils/formatters';
 
 type PeriodPreset = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
 type ReportKey = 'sales' | 'products' | 'employees';
+type ReportTab = 'summary' | 'movements';
 const roleFilters = [
   { value: '', label: 'Todos' },
   { value: 'OWNER', label: 'Dueño' },
@@ -67,6 +69,17 @@ export default function ReportsScreen() {
   const [exporting, setExporting] = useState<ReportKey | null>(null);
   const [salesPage, setSalesPage] = useState(1);
   const [employeePage, setEmployeePage] = useState(1);
+  const [reportTab, setReportTab] = useState<ReportTab>('summary');
+  const [movementDate, setMovementDate] = useState(todayRange.fromDate);
+  const [movementCalendarOpen, setMovementCalendarOpen] = useState(false);
+  const [movementPage, setMovementPage] = useState(1);
+  const [movementLoading, setMovementLoading] = useState(false);
+  const [movementError, setMovementError] = useState<string | null>(null);
+  const [deliveryHistory, setDeliveryHistory] = useState<DeliveryHistoryItem[]>([]);
+  const [salesHistory, setSalesHistory] = useState<SalesHistoryItem[]>([]);
+  const [expandedDriverId, setExpandedDriverId] = useState<number | null>(null);
+  const [deliveryAttempts, setDeliveryAttempts] = useState<Record<number, DeliveryAttemptItem[]>>({});
+  const [loadingAttempts, setLoadingAttempts] = useState(false);
 
   useEffect(() => { if (!canViewReports) router.replace('/(tabs)/catalog' as any); }, [canViewReports, router]);
 
@@ -105,6 +118,60 @@ export default function ReportsScreen() {
   const pageSales = useMemo(() => pageItems(sales, salesPage), [sales, salesPage]);
   const pageEmployees = useMemo(() => pageItems(employees, employeePage), [employees, employeePage]);
 
+  const loadMovements = useCallback(async () => {
+    if (!canViewReports || !isDateString(movementDate)) return;
+    setMovementLoading(true);
+    setMovementError(null);
+    try {
+      const params = { fromDate: movementDate, toDate: movementDate };
+      const [deliveries, salesEntries] = await Promise.all([
+        reportsService.getDeliveryHistory(params),
+        reportsService.getSalesHistory({ ...params, dateType: 'DELIVERED' }),
+      ]);
+      setDeliveryHistory(deliveries);
+      setSalesHistory(salesEntries);
+      setExpandedDriverId(null);
+      setDeliveryAttempts({});
+    } catch (cause) {
+      setMovementError(parseApiError(cause, 'No se pudieron cargar los movimientos de reparto.').message);
+    } finally { setMovementLoading(false); }
+  }, [canViewReports, movementDate]);
+
+  useEffect(() => { if (reportTab === 'movements') void loadMovements(); }, [reportTab, loadMovements]);
+
+  const driverMovements = useMemo(() => {
+    const salesByOrder = new Map(salesHistory.map(sale => [sale.orderId, sale]));
+    const grouped = new Map<number, { id: number; name: string; orders: DeliveryHistoryItem[]; products: number; truckValue: number; cash: number; transfer: number }>();
+    for (const delivery of deliveryHistory) {
+      const id = delivery.driverId || 0;
+      const row = grouped.get(id) ?? { id, name: delivery.driverName || 'Repartidor', orders: [], products: 0, truckValue: 0, cash: 0, transfer: 0 };
+      row.orders.push(delivery);
+      for (const item of delivery.items) {
+        row.products += item.quantity;
+        row.truckValue += item.subtotal || item.quantity * item.unitPrice;
+      }
+      const sale = salesByOrder.get(delivery.orderId);
+      if (sale) {
+        row.cash += sale.cashAmount;
+        row.transfer += sale.transferAmount;
+      }
+      grouped.set(id, row);
+    }
+    return [...grouped.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [deliveryHistory, salesHistory]);
+  const pageDriverMovements = useMemo(() => pageItems(driverMovements, movementPage), [driverMovements, movementPage]);
+
+  const toggleDriverMovement = async (driverId: number, orders: DeliveryHistoryItem[]) => {
+    if (expandedDriverId === driverId) { setExpandedDriverId(null); return; }
+    setExpandedDriverId(driverId);
+    const orderIds = orders.map(order => order.orderId).filter(id => !deliveryAttempts[id]);
+    if (!orderIds.length) return;
+    setLoadingAttempts(true);
+    const results = await Promise.all(orderIds.map(async id => [id, await reportsService.getDeliveryAttempts(id).catch(() => [])] as const));
+    setDeliveryAttempts(current => ({ ...current, ...Object.fromEntries(results) }));
+    setLoadingAttempts(false);
+  };
+
   const selectPreset = (value: PeriodPreset) => {
     setPreset(value);
   };
@@ -141,6 +208,9 @@ export default function ReportsScreen() {
 
       {!!error && <View style={styles.errorWrap}><FormErrorBanner message={error} onRetry={() => void load()} /></View>}
 
+      <View style={styles.reportTabs}>{([['summary', 'Resumen'], ['movements', 'Movimientos']] as const).map(([tab, label]) => <TouchableOpacity key={tab} style={[styles.reportTab, reportTab === tab && styles.reportTabActive]} onPress={() => setReportTab(tab)}><Text style={[styles.reportTabText, reportTab === tab && styles.reportTabTextActive]}>{label}</Text></TouchableOpacity>)}</View>
+
+      {reportTab === 'summary' ? <>
       <View style={styles.metricsRow}>
         <MetricCard label="VENTAS DE HOY" value={currency(todaySales)} loading={loading} />
         <MetricCard label="PEDIDOS PENDIENTES" value={String(pendingOrders)} loading={loading} />
@@ -167,6 +237,39 @@ export default function ReportsScreen() {
         {loading ? <SectionLoading /> : employees.length ? pageEmployees.map(row => <DataRow key={row.employeeId} title={row.employeeName} detail={`${row.role} · ${row.orderCount} pedidos · ${row.deliveriesCompleted} entregas`} value={currency(row.salesAmount)} />) : <EmptyState text="No hay actividad de empleados para este período." />}<PaginationControls page={employeePage} totalItems={employees.length} onPageChange={setEmployeePage} />
       </ReportCard>
       <Text style={styles.footerNote}>Los reportes se calculan a partir de los pedidos entregados.</Text>
+      </> : <>
+        <View style={styles.card}>
+          <View style={styles.reportHeader}><View style={styles.reportIcon}><Ionicons name="calendar-outline" size={20} color={colors.primary} /></View><View style={styles.reportTitleWrap}><Text style={styles.cardTitle}>Movimientos diarios</Text><Text style={styles.reportSubtitle}>Repartos, productos y cobros por repartidor</Text></View><TouchableOpacity style={styles.movementDateButton} onPress={() => setMovementCalendarOpen(true)}><Text style={styles.movementDateText}>{formatDate(movementDate)}</Text><Ionicons name="chevron-down" size={16} color={colors.primary} /></TouchableOpacity></View>
+        </View>
+        {!!movementError && <View style={styles.errorWrap}><FormErrorBanner message={movementError} onRetry={() => void loadMovements()} /></View>}
+        {movementLoading ? <SectionLoading /> : driverMovements.length ? pageDriverMovements.map(driver => {
+          const expanded = expandedDriverId === driver.id;
+          return <View key={driver.id} style={styles.movementDriverCard}>
+            <TouchableOpacity style={styles.movementDriverHeader} onPress={() => void toggleDriverMovement(driver.id, driver.orders)} accessibilityRole="button" accessibilityState={{ expanded }}>
+              <View style={styles.driverMovementCopy}><Text style={styles.driverMovementName}>{driver.name}</Text><Text style={styles.dataDetail}>{driver.orders.length} pedidos · {driver.products} productos · carga {currency(driver.truckValue)}</Text><Text style={styles.dataDetail}>Efectivo {currency(driver.cash)} · Transferencia {currency(driver.transfer)} · Total cobrado {currency(driver.cash + driver.transfer)}</Text></View><Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={19} color={colors.primary} />
+            </TouchableOpacity>
+            {expanded && <View style={styles.movementOrders}>
+              {loadingAttempts ? <SectionLoading /> : driver.orders.map(order => {
+                const attempts = deliveryAttempts[order.orderId] ?? [];
+                const scheduledAttempts = attempts.filter(attempt => (attempt.deliveryDate || (attempt.attemptedAt || '').slice(0, 10)) === movementDate).sort((a, b) => a.attemptedAt.localeCompare(b.attemptedAt) || a.attemptNumber - b.attemptNumber);
+                const currentAttempt = scheduledAttempts[scheduledAttempts.length - 1];
+                const sale = salesHistory.find(entry => entry.orderId === order.orderId);
+                const isNoDelivered = order.status === 'CANCELLED' || currentAttempt?.status === 'FAILED';
+                const statusLabel = isNoDelivered ? 'No entregado' : order.status === 'DELIVERED' ? 'Entregado' : order.status === 'IN_ROUTE' ? 'En reparto' : 'Pendiente';
+                const time = order.deliveredAt ?? [...attempts].reverse().find(attempt => attempt.completedAt)?.completedAt ?? attempts[attempts.length - 1]?.attemptedAt;
+                return <View key={order.orderId} style={styles.movementOrder}>
+                  <View style={styles.movementOrderHeader}><View style={styles.driverMovementCopy}><Text style={styles.dataTitle}>{order.orderCode} · {order.customerBusinessName}</Text><Text style={styles.dataDetail}>{statusLabel}{time ? ` · ${formatDateTime(time)}` : ''}</Text>{!!order.deliveryAddressSnapshot && <Text style={styles.dataDetail}>{order.deliveryAddressSnapshot}</Text>}</View><Text style={styles.dataValue}>{currency(order.items.reduce((sum, item) => sum + (item.subtotal || item.quantity * item.unitPrice), 0))}</Text></View>
+                  {isNoDelivered && !!currentAttempt?.failureReason && <Text style={styles.movementReason}>Motivo: {currentAttempt.failureReason}</Text>}
+                  {order.items.map((item, index) => <Text key={`${item.productId}-${index}`} style={styles.movementItem}>{item.productName} · {item.quantity} {item.productUnit} · {currency(item.subtotal || item.quantity * item.unitPrice)}</Text>)}
+                  {!!sale && <Text style={styles.movementPayment}>Efectivo {currency(sale.cashAmount)} · Transferencia {currency(sale.transferAmount)}</Text>}
+                </View>;
+              })}
+            </View>}
+          </View>;
+        }) : <EmptyState text="No hay movimientos de reparto para este día." />}
+        <PaginationControls page={movementPage} totalItems={driverMovements.length} onPageChange={setMovementPage} />
+        <DatePickerCalendar visible={movementCalendarOpen} value={movementDate} title="Día de movimientos" onSelect={date => { setMovementDate(date); setMovementPage(1); }} onClose={() => setMovementCalendarOpen(false)} />
+      </>}
     </ScrollView>
   );
 }
@@ -195,6 +298,11 @@ const styles = StyleSheet.create({
   subtitle: { ...typography.caption, color: colors.textSecondary, marginTop: 3 },
   refreshButton: { width: 42, height: 42, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
   errorWrap: { marginBottom: spacing.md },
+  reportTabs: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  reportTab: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, borderBottomWidth: 2, borderBottomColor: colors.border },
+  reportTabActive: { borderBottomColor: colors.primary },
+  reportTabText: { ...typography.label, color: colors.textSecondary },
+  reportTabTextActive: { color: colors.primary, fontWeight: '700' },
   metricsRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.md },
   metricCard: { flex: 1, minHeight: 112, justifyContent: 'space-between', padding: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
   metricLabel: { ...typography.caption, color: colors.textSecondary, fontWeight: '700', letterSpacing: 0.7 },
@@ -214,6 +322,18 @@ const styles = StyleSheet.create({
   reportIcon: { width: 38, height: 38, borderRadius: radius.sm, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
   reportTitleWrap: { flex: 1 },
   reportSubtitle: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  movementDateButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm },
+  movementDateText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
+  movementDriverCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, marginBottom: spacing.sm, overflow: 'hidden' },
+  movementDriverHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
+  driverMovementCopy: { flex: 1 },
+  driverMovementName: { ...typography.label, color: colors.textPrimary, fontWeight: '800' },
+  movementOrders: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
+  movementOrder: { paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+  movementOrderHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  movementReason: { ...typography.caption, color: colors.error, marginTop: spacing.xs, fontWeight: '700' },
+  movementItem: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.xs },
+  movementPayment: { ...typography.caption, color: colors.primary, marginTop: spacing.xs, fontWeight: '700' },
   exportButton: { minWidth: 54, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 4, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm },
   exportText: { ...typography.caption, color: colors.primary, fontWeight: '700' },
   dataRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },

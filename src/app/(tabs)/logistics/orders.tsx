@@ -19,6 +19,8 @@ const money = (amount: number) => `$${amount.toLocaleString('es-AR')}`;
 export default function AssignOrdersScreen() {
   const router = useRouter();
   const user = useAuthStore(state => state.user);
+  const isDriver = user?.role === 'delivery' || /delivery|driver|chofer|repart/i.test(user?.roleName ?? '');
+  useEffect(() => { if (isDriver) router.replace('/(tabs)/logistics' as any); }, [isDriver, router]);
   const [orders, setOrders] = useState<OrderListItem[]>([]);
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [loading, setLoading] = useState(true);

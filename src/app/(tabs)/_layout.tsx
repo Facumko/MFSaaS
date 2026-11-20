@@ -5,6 +5,7 @@ import { usePermissions } from "../../hooks/usePermissions";
 
 export default function TabsLayout() {
   const permissions = usePermissions();
+  const { isDelivery } = permissions;
   const hidden: { href: null } = { href: null };
   return (
     <Tabs
@@ -61,7 +62,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="orders/index"
         options={{
-          ...(permissions.canViewOrders ? {} : hidden),
+          ...(permissions.canViewOrders && !isDelivery ? {} : hidden),
           title: "Pedidos",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="clipboard-outline" size={size} color={color} />
@@ -72,7 +73,7 @@ export default function TabsLayout() {
         name="logistics"
         options={{
           ...(permissions.canViewLogistics ? {} : hidden),
-          title: "Camiones",
+          title: isDelivery ? "Mi camión" : "Camiones",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="bus-outline" size={size} color={color} />
           ),

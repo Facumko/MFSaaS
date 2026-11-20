@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -48,11 +48,6 @@ export default function ClientDetailScreen() {
   const [deactivating, setDeactivating] = useState(false);
   const [activating, setActivating] = useState(false);
 
-  useEffect(() => {
-    if (!canViewClients) router.replace('/(tabs)/profile' as any);
-    else fetchClientDetail();
-  }, [canViewClients, clientId, router]);
-
   const fetchClientDetail = async () => {
     if (!clientId) return;
     try {
@@ -66,6 +61,11 @@ export default function ClientDetailScreen() {
       setLoading(false);
     }
   };
+
+  useFocusEffect(useCallback(() => {
+    if (!canViewClients) router.replace('/(tabs)/profile' as any);
+    else void fetchClientDetail();
+  }, [canViewClients, clientId, router]));
 
   const handleEditClient = () => {
     router.push({

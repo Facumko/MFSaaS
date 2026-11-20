@@ -96,8 +96,20 @@ export default function ClientFormScreen() {
     if (!canManageClients) return;
     if (isEditMode && clientId) {
       loadClient();
+    } else {
+      reset({
+        businessName: '',
+        taxId: '',
+        phone: '',
+        email: '',
+        addresses: [{ id: '', label: 'Dirección principal', street: '', city: '', isDefault: true }],
+      });
+      clearErrors();
+      setServerError(null);
+      setLoadError(null);
+      setLoading(false);
     }
-  }, [clientId, canManageClients]);
+  }, [clientId, canManageClients, isEditMode, reset, clearErrors]);
 
   const loadClient = async () => {
     if (!clientId) return;

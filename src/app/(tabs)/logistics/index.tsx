@@ -17,7 +17,8 @@ import { PaginationControls, pageItems } from '../../../components/ui/Pagination
 import { clientsService } from '../../../services/api/clientsService';
 import { logisticsService, Truck, TruckStockItem } from '../../../services/api/logisticsService';
 import { productsService } from '../../../services/api/productsService';
-import { ApiOrderStatus, OrderListItem, salesService } from '../../../services/api/salesService';
+import { ApiOrderStatus, DeliveryAttempt, DeliveryPaymentMethod, OrderListItem, salesService } from '../../../services/api/salesService';
+import { ReceiptChannel, ReceiptData, receiptService } from '../../../services/api/receiptService';
 import { ManagedUser, usersService } from '../../../services/api/usersService';
 import { authService } from '../../../services/api/authService';
 import { SelectField } from '../../../components/ui/SelectField';
@@ -26,16 +27,28 @@ import { usePermissions } from '../../../hooks/usePermissions';
 import { IProduct } from '../../../types';
 import { colors, radius, spacing, typography } from '../../../theme';
 import { parseApiError } from '../../../utils/apiErrors';
-import { formatDate } from '../../../utils/formatters';
+import { formatArgentineAmountInput, formatDate, formatDateTime } from '../../../utils/formatters';
 
 type DeleteTarget = { kind: 'truck' | 'stock'; id: string; label: string } | null;
+type DriverPaymentChoice = 'full' | 'account' | 'partial';
+type DriverReceiptPrompt = { data: ReceiptData; email?: string; phone?: string };
+const deliveryFailureReasons = ['Local cerrado', 'Cliente ausente', 'No había nadie para recibir', 'Rechazó recibir el pedido', 'Dirección incorrecta', 'Problema con el vehículo', 'Otro'];
 
 const today = () => {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 };
 
-const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'Cancelado' };
+const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'No entregado' };
+const money = (value: number) => `$${value.toLocaleString('es-AR')}`;
+const latestAttemptForScheduledDate = (order: OrderListItem, attempts: DeliveryAttempt[] = []) => {
+  const scheduledDate = (order.deliveryDate || today()).slice(0, 10);
+  const matching = attempts
+    .filter(attempt => (attempt.deliveryDate || attempt.attemptedAt.slice(0, 10) || scheduledDate) === scheduledDate)
+    .sort((a, b) => a.attemptedAt.localeCompare(b.attemptedAt) || a.attemptNumber - b.attemptNumber);
+  return matching[matching.length - 1];
+};
+const hasFailedAttemptForScheduledDate = (order: OrderListItem, attempts: DeliveryAttempt[] = []) => latestAttemptForScheduledDate(order, attempts)?.status === 'FAILED';
 const isDeliveryRole = (roleName: string, roleId?: string) => /delivery|driver|chofer|repartidor/i.test(roleName) || roleId === '4';
 
 export default function LogisticsScreen() {
@@ -57,6 +70,32 @@ export default function LogisticsScreen() {
   const [selectedTruck, setSelectedTruck] = useState<Truck | null>(null);
   const [ordersModalOpen, setOrdersModalOpen] = useState(false);
   const [truckOrders, setTruckOrders] = useState<OrderListItem[]>([]);
+  const [driverDeliveryAttempts, setDriverDeliveryAttempts] = useState<Record<string, DeliveryAttempt[]>>({});
+  const [driverOrderSearch, setDriverOrderSearch] = useState('');
+  const [expandedDriverOrderId, setExpandedDriverOrderId] = useState<string | null>(null);
+  const [driverCancelOrder, setDriverCancelOrder] = useState<OrderListItem | null>(null);
+  const [driverCancelStage, setDriverCancelStage] = useState<'confirm' | 'reason'>('confirm');
+  const [driverCancelReasonOption, setDriverCancelReasonOption] = useState<string | null>(null);
+  const [driverCancelReasonText, setDriverCancelReasonText] = useState('');
+  const [driverCancelIdempotencyKey, setDriverCancelIdempotencyKey] = useState('');
+  const [driverCancellationReasons, setDriverCancellationReasons] = useState<Record<string, string>>({});
+  const [driverTab, setDriverTab] = useState<'orders' | 'products'>('orders');
+  const [driverStatusFilter, setDriverStatusFilter] = useState<'PENDING' | 'DELIVERED' | 'CANCELLED'>('PENDING');
+  const [driverToday, setDriverToday] = useState(today());
+  const [driverLoadedProductPage, setDriverLoadedProductPage] = useState(1);
+  const [driverOrderBusyId, setDriverOrderBusyId] = useState<string | null>(null);
+  const [driverOrderError, setDriverOrderError] = useState<string | null>(null);
+  const [driverDeliveryOrder, setDriverDeliveryOrder] = useState<OrderListItem | null>(null);
+  const [driverDeliveryIdempotencyKey, setDriverDeliveryIdempotencyKey] = useState('');
+  const [driverPaymentChoice, setDriverPaymentChoice] = useState<DriverPaymentChoice | null>(null);
+  const [driverPaymentAmount, setDriverPaymentAmount] = useState('');
+  const [driverPaymentMethod, setDriverPaymentMethod] = useState<'cash' | 'transfer' | 'mixed'>('cash');
+  const [driverMixedCashAmount, setDriverMixedCashAmount] = useState('');
+  const [driverDeliveryError, setDriverDeliveryError] = useState<string | null>(null);
+  const [driverDeliverySubmitting, setDriverDeliverySubmitting] = useState(false);
+  const [driverReceiptPrompt, setDriverReceiptPrompt] = useState<DriverReceiptPrompt | null>(null);
+  const [driverReceiptSharing, setDriverReceiptSharing] = useState<ReceiptChannel | null>(null);
+  const [driverReceiptError, setDriverReceiptError] = useState<string | null>(null);
   const [stock, setStock] = useState<TruckStockItem[]>([]);
   const [products, setProducts] = useState<IProduct[]>([]);
   const [loadingTrucks, setLoadingTrucks] = useState(true);
@@ -105,8 +144,55 @@ export default function LogisticsScreen() {
   const pageStock = useMemo(() => pageItems(stock, stockPage), [stock, stockPage]);
   const pageEmployees = useMemo(() => pageItems(employees, employeePage), [employees, employeePage]);
   const pageProducts = useMemo(() => pageItems(products, productPage), [products, productPage]);
+  const visibleDriverOrders = useMemo(() => {
+    const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim();
+    const query = normalize(driverOrderSearch);
+    return truckOrders.filter(order => {
+      const hasFailedAttempt = hasFailedAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]) || Boolean(driverCancellationReasons[order.id]);
+      const matchesStatus = driverStatusFilter === 'PENDING'
+        ? (order.status === 'PENDING' || order.status === 'IN_ROUTE') && !hasFailedAttempt
+        : driverStatusFilter === 'CANCELLED'
+          ? order.status === 'CANCELLED' || hasFailedAttempt
+          : order.status === driverStatusFilter;
+      return matchesStatus && (!query || normalize(order.customerName).startsWith(query));
+    });
+  }, [driverCancellationReasons, driverDeliveryAttempts, driverOrderSearch, driverStatusFilter, truckOrders]);
+  const loadedOrderProducts = useMemo(() => {
+    const totals = new Map<string, { productId: string; productName: string; unit?: string; quantity: number; notDeliveredQuantity: number; notDeliveredReason?: string }>();
+    truckOrders.filter(order =>
+      (order.status === 'PENDING' || order.status === 'IN_ROUTE' || order.status === 'CANCELLED') &&
+      (order.deliveryDate || order.createdAt).slice(0, 10) === driverToday,
+    ).forEach(order => order.items?.forEach(item => {
+      const key = item.productId || item.productName;
+      const current = totals.get(key);
+      if (current) {
+        current.quantity += item.quantity;
+        const currentAttempt = latestAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]);
+        const notDelivered = order.status === 'CANCELLED' || hasFailedAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]) || Boolean(driverCancellationReasons[order.id]);
+        if (notDelivered) {
+          current.notDeliveredQuantity += item.quantity;
+          const reason = currentAttempt?.failureReason ?? driverCancellationReasons[order.id];
+          if (reason) current.notDeliveredReason = [current.notDeliveredReason, reason].filter(Boolean).filter((value, index, list) => list.indexOf(value) === index).join(' · ');
+        }
+      } else {
+        const currentAttempt = latestAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]);
+        const notDelivered = order.status === 'CANCELLED' || hasFailedAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]) || Boolean(driverCancellationReasons[order.id]);
+        totals.set(key, { ...item, notDeliveredQuantity: notDelivered ? item.quantity : 0, notDeliveredReason: notDelivered ? currentAttempt?.failureReason ?? driverCancellationReasons[order.id] : undefined });
+      }
+    }));
+    return [...totals.values()].sort((a, b) => a.productName.localeCompare(b.productName));
+  }, [driverCancellationReasons, driverDeliveryAttempts, driverToday, truckOrders]);
+  const pageLoadedOrderProducts = useMemo(() => pageItems(loadedOrderProducts, driverLoadedProductPage), [driverLoadedProductPage, loadedOrderProducts]);
+  const driverCashTotals = useMemo(() => truckOrders
+    .filter(order => order.status === 'DELIVERED' && (order.deliveredAt || order.deliveryDate || order.createdAt).slice(0, 10) === driverToday)
+    .reduce((totals, order) => ({ cash: totals.cash + (order.cashAmount ?? 0), transfer: totals.transfer + (order.transferAmount ?? 0) }), { cash: 0, transfer: 0 }), [driverToday, truckOrders]);
   useEffect(() => setTruckPage(1), [truckSearch, truckDriverFilter]);
   useEffect(() => { if (!canViewLogistics) router.replace('/(tabs)/catalog' as any); }, [canViewLogistics, router]);
+  useEffect(() => {
+    const timer = setInterval(() => setDriverToday(today()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => setDriverLoadedProductPage(1), [driverToday, loadedOrderProducts.length]);
 
   const loadTrucks = useCallback(async () => {
     setLoadingTrucks(true);
@@ -150,15 +236,17 @@ export default function LogisticsScreen() {
       const truckId = Number(truck.id);
       if (!Number.isInteger(truckId) || truckId < 1) throw new Error('No se pudo identificar el camión seleccionado. Actualizá la pantalla e intentá de nuevo.');
       setExpandedOrderId(null); setOrderPage(1);
-      const [orders, firstClientPage] = await Promise.all([salesService.getOrdersByTruck(truckId), clientsService.getClients('', 1)]);
-      const clientPages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(firstClientPage.total / 10) - 1) }, (_, index) => clientsService.getClients('', index + 2)));
-      const customerNames = new Map<string, string>([firstClientPage, ...clientPages].flatMap(page => page.items).map(client => [client.id, client.businessName] as const));
-      setTruckOrders(orders.map(order => ({ ...order, customerName: order.customerName && order.customerName !== 'Cliente' ? order.customerName : customerNames.get(order.customerId ?? '') || 'Cliente sin identificar' })));
+      const orders = await salesService.getOrdersByTruck(truckId);
+      setTruckOrders(orders);
+      if (isDriver) {
+        const attempts = await Promise.all(orders.filter(order => order.status === 'PENDING' || order.status === 'IN_ROUTE').map(async order => [order.id, await salesService.getDeliveryAttempts(order.id).catch(() => [])] as const));
+        setDriverDeliveryAttempts(Object.fromEntries(attempts));
+      }
     } catch (err) {
       setTruckOrdersError(parseApiError(err, 'No se pudieron cargar los pedidos de este camión.').message);
       setTruckOrders([]);
     } finally { setLoadingTruckOrders(false); }
-  }, []);
+  }, [isDriver]);
 
   const loadTruckStock = useCallback(async (truck: Truck) => {
     setLoadingStock(true);
@@ -188,6 +276,115 @@ export default function LogisticsScreen() {
     void loadTrucks();
     if (!isDriver) void loadEmployees();
   }, [canViewLogistics, isDriver, loadTrucks, loadEmployees]);
+
+  useEffect(() => {
+    if (!isDriver || !trucks.length) return;
+    const assignedTruck = trucks.find(truck => truck.id === user?.truckId);
+    if (!assignedTruck) return;
+    setSelectedTruck(assignedTruck);
+    void loadTruckOrders(assignedTruck);
+  }, [isDriver, trucks, user?.truckId, loadTruckOrders]);
+
+  const openDriverDelivery = (order: OrderListItem) => {
+    setDriverDeliveryOrder(order);
+    setDriverDeliveryIdempotencyKey(`driver-delivery-${order.id}-${Date.now()}`);
+    setDriverPaymentChoice(null);
+    setDriverPaymentAmount('');
+    setDriverPaymentMethod('cash');
+    setDriverMixedCashAmount('');
+    setDriverDeliveryError(null);
+  };
+
+  const cancelAssignedOrder = async () => {
+    const order = driverCancelOrder;
+    if (!order) return;
+    const reason = driverCancelReasonText.trim() || driverCancelReasonOption;
+    if (!reason || (driverCancelReasonOption === 'Otro' && !driverCancelReasonText.trim())) { setDriverOrderError('Seleccioná o escribí el motivo por el que no se entregó.'); return; }
+    setDriverOrderBusyId(order.id);
+    setDriverOrderError(null);
+    try {
+      await salesService.markDeliveryAttemptFailed(order.id, reason, driverCancelIdempotencyKey);
+      setDriverCancellationReasons(current => ({ ...current, [order.id]: reason }));
+      setDriverCancelOrder(null);
+      setDriverCancelStage('confirm');
+      setDriverCancelReasonOption(null);
+      setDriverCancelReasonText('');
+      setDriverCancelIdempotencyKey('');
+      if (selectedTruck) await loadTruckOrders(selectedTruck);
+    } catch (err) {
+      setDriverOrderError(parseApiError(err, 'No se pudo registrar el intento de entrega fallido.').message);
+    } finally {
+      setDriverOrderBusyId(null);
+    }
+  };
+
+  const confirmDriverDelivery = async () => {
+    const order = driverDeliveryOrder;
+    if (!order || !driverPaymentChoice) { setDriverDeliveryError('Elegí cómo se resolvió el pago para continuar.'); return; }
+    const amount = driverPaymentChoice === 'account' ? 0 : driverPaymentChoice === 'full' ? order.total : Number(driverPaymentAmount.trim().replace(',', '.'));
+    if (!Number.isFinite(order.total) || order.total <= 0) { setDriverDeliveryError('El total del pedido no es válido.'); return; }
+    if (driverPaymentChoice === 'partial' && (!Number.isFinite(amount) || amount <= 0 || amount >= order.total)) { setDriverDeliveryError(`Ingresá un pago mayor que cero y menor que el total (${money(order.total)}).`); return; }
+    const cashPart = driverPaymentMethod === 'mixed' ? Number(driverMixedCashAmount.trim().replace(',', '.')) : driverPaymentMethod === 'cash' ? amount : 0;
+    const transferPart = driverPaymentMethod === 'mixed' ? amount - cashPart : driverPaymentMethod === 'transfer' ? amount : 0;
+    if (driverPaymentChoice !== 'account' && driverPaymentMethod === 'mixed' && (!Number.isFinite(cashPart) || !Number.isFinite(transferPart) || cashPart <= 0 || transferPart <= 0)) { setDriverDeliveryError('Para un pago mixto, ingresá efectivo mayor que cero y menor que el importe recibido.'); return; }
+    const method: DeliveryPaymentMethod = driverPaymentChoice === 'account'
+      ? 'CURRENT_ACCOUNT'
+      : driverPaymentMethod === 'cash' ? 'CASH'
+        : driverPaymentMethod === 'transfer' ? 'TRANSFER'
+          : 'MIXED';
+    const payload: { paymentMethod: DeliveryPaymentMethod; cashAmount?: number; transferAmount?: number; amountPaid: number; idempotencyKey: string } = {
+      paymentMethod: method,
+      amountPaid: driverPaymentChoice === 'account' ? 0 : amount,
+      idempotencyKey: driverDeliveryIdempotencyKey,
+      ...(method === 'CASH' ? { cashAmount: cashPart } : {}),
+      ...(method === 'TRANSFER' ? { transferAmount: transferPart } : {}),
+      ...(method === 'MIXED' ? { cashAmount: cashPart, transferAmount: transferPart } : {}),
+    };
+
+    setDriverDeliverySubmitting(true);
+    setDriverDeliveryError(null);
+    try {
+      // El endpoint de entrega acepta pedidos en reparto. El repartidor puede confirmar
+      // directamente desde su lista de pendientes, así que avanzamos el estado primero.
+      if (order.status === 'PENDING') await salesService.markInRoute(order.id);
+      await salesService.markDelivered(order.id, payload);
+      const raw = await salesService.getOrder(order.id).catch(() => ({} as Record<string, any>));
+      const customer = raw.customer ?? raw.client ?? {};
+      const customerId = String(raw.customerId ?? raw.clientId ?? customer.id ?? order.customerId ?? '');
+      const linkedClient = /^\d+$/.test(customerId) ? await clientsService.getClientById(customerId).catch(() => null) : null;
+      const rawItems = raw.items ?? raw.orderItems ?? raw.details ?? order.items ?? [];
+      const methodLabel = driverPaymentChoice === 'account' ? 'Cuenta corriente'
+        : driverPaymentChoice === 'partial' ? `Pago parcial (${driverPaymentMethod === 'cash' ? 'efectivo' : driverPaymentMethod === 'transfer' ? 'transferencia' : 'mixto'})`
+          : driverPaymentMethod === 'cash' ? 'Efectivo' : driverPaymentMethod === 'transfer' ? 'Transferencia' : `Mixto (efectivo ${money(cashPart)}; transferencia ${money(transferPart)})`;
+      const data: ReceiptData = {
+        code: order.code,
+        date: formatDateTime(new Date().toISOString()),
+        customer: String(raw.customerName ?? customer.businessName ?? customer.name ?? order.customerName),
+        items: Array.isArray(rawItems) ? rawItems.map((item: Record<string, any>) => ({ name: String(item.productName ?? item.product?.name ?? item.name ?? 'Producto'), quantity: Number(item.quantity ?? item.qty ?? 0), unitPrice: Number(item.unitPrice ?? item.price ?? item.product?.unitPrice ?? 0) })) : [],
+        paymentMethod: methodLabel,
+        total: Number(raw.totalAmount ?? raw.total ?? order.total),
+        responsible: user?.fullName ?? user?.username ?? 'Repartidor',
+      };
+      setDriverReceiptError(null);
+      setDriverReceiptPrompt({ data, email: String(raw.customerEmail ?? customer.email ?? raw.email ?? order.customerEmail ?? linkedClient?.email ?? '') || undefined, phone: String(raw.customerPhone ?? customer.phone ?? customer.phoneNumber ?? customer.mobile ?? raw.phone ?? raw.phoneNumber ?? order.customerPhone ?? linkedClient?.phone ?? '') || undefined });
+      setDriverDeliveryOrder(null);
+      setDriverDeliveryIdempotencyKey('');
+      if (selectedTruck) await loadTruckOrders(selectedTruck);
+    } catch (err) {
+      setDriverDeliveryError(parseApiError(err, 'No se pudo confirmar la entrega.').message);
+    } finally { setDriverDeliverySubmitting(false); }
+  };
+
+  const shareDriverReceipt = async (channel: ReceiptChannel) => {
+    if (!driverReceiptPrompt) return;
+    const recipient = channel === 'email' ? driverReceiptPrompt.email : driverReceiptPrompt.phone;
+    if (!recipient) { setDriverReceiptError(channel === 'email' ? 'El pedido no incluye correo del cliente.' : 'El pedido no incluye teléfono del cliente.'); return; }
+    setDriverReceiptSharing(channel);
+    setDriverReceiptError(null);
+    try { await receiptService.generateAndShare(driverReceiptPrompt.data, channel, recipient); setDriverReceiptPrompt(null); }
+    catch (err) { setDriverReceiptError(parseApiError(err, 'No se pudo preparar el comprobante PDF.').message); }
+    finally { setDriverReceiptSharing(null); }
+  };
 
   const openTruckForm = (truck?: Truck) => {
     setEditingTruck(truck ?? null);
@@ -343,6 +540,94 @@ export default function LogisticsScreen() {
     } finally { setSaving(false); }
   };
 
+  if (isDriver) {
+    return (
+      <>
+      <ScrollView style={styles.screen} contentContainerStyle={styles.driverContainer} keyboardShouldPersistTaps="handled">
+        <View style={styles.driverHeader}>
+          <View style={styles.driverHeaderIcon}><Ionicons name="bus-outline" size={24} color={colors.primary} /></View>
+          <View style={styles.driverHeaderCopy}><Text style={styles.eyebrow}>REPARTO</Text><Text style={styles.title}>Mi camión</Text><Text style={styles.subtitle}>{selectedTruck?.licensePlate ?? 'Camión asignado'}</Text></View>
+          <TouchableOpacity style={styles.iconButton} onPress={() => selectedTruck && void loadTruckOrders(selectedTruck)} disabled={loadingTruckOrders} accessibilityLabel="Actualizar pedidos"><Ionicons name="refresh-outline" size={20} color={colors.primary} /></TouchableOpacity>
+        </View>
+        {!!driverOrderError && <FormErrorBanner message={driverOrderError} onRetry={() => selectedTruck && void loadTruckOrders(selectedTruck)} />}
+        {!!truckOrdersError && <FormErrorBanner message={truckOrdersError} onRetry={() => selectedTruck && void loadTruckOrders(selectedTruck)} />}
+        {!!error && <FormErrorBanner message={error} onRetry={loadTrucks} />}
+        <View style={styles.driverCashCard}><View style={styles.driverCashHeading}><Ionicons name="cash-outline" size={20} color={colors.primary} /><Text style={styles.driverProductsTitle}>Caja del día · {driverToday}</Text></View><View style={styles.driverCashRow}><Text style={styles.driverDetailText}>Efectivo</Text><Text style={styles.driverCashAmount}>{money(driverCashTotals.cash)}</Text></View><View style={styles.driverCashRow}><Text style={styles.driverDetailText}>Transferencia</Text><Text style={styles.driverCashAmount}>{money(driverCashTotals.transfer)}</Text></View><View style={styles.driverCashTotalRow}><Text style={styles.driverCashTotalLabel}>Total registrado</Text><Text style={styles.driverCashTotalValue}>{money(driverCashTotals.cash + driverCashTotals.transfer)}</Text></View></View>
+        {loadingTrucks || loadingTruckOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : !selectedTruck ? (
+          <View style={styles.driverEmpty}><Ionicons name="bus-outline" size={32} color={colors.textSecondary} /><Text style={styles.emptyTitle}>No tenés un camión asignado</Text><Text style={styles.emptyText}>Pedile a un administrador que asigne tu usuario a un camión.</Text></View>
+        ) : (
+          <>
+            <View style={styles.driverTabs}>{([['orders', 'Pedidos'], ['products', 'Productos cargados']] as const).map(([tab, label]) => <TouchableOpacity key={tab} style={[styles.driverTab, driverTab === tab && styles.driverTabActive]} onPress={() => setDriverTab(tab)}><Text style={[styles.driverTabText, driverTab === tab && styles.driverTabTextActive]}>{label}</Text></TouchableOpacity>)}</View>
+            {driverTab === 'products' ? <View>
+              <Text style={styles.driverSectionNote}>Carga de hoy · {driverToday}</Text>
+              {pageLoadedOrderProducts.map(product => <View key={product.productId} style={styles.driverLoadedProduct}><View style={styles.driverLoadedProductCopy}><Text style={styles.driverCustomerName}>{product.productName}</Text>{!!product.unit && <Text style={styles.driverDetailText}>{product.unit}</Text>}{product.notDeliveredQuantity > 0 && <Text style={styles.driverLoadedStatus}>{product.notDeliveredQuantity} {product.unit || 'unidades'} no entregado{product.notDeliveredReason ? ` · ${product.notDeliveredReason}` : ''}</Text>}</View><Text style={styles.driverLoadedQuantity}>× {product.quantity}</Text></View>)}
+              <PaginationControls page={driverLoadedProductPage} totalItems={loadedOrderProducts.length} onPageChange={setDriverLoadedProductPage} />
+              {!loadedOrderProducts.length && <View style={styles.driverEmpty}><Ionicons name="cube-outline" size={30} color={colors.textSecondary} /><Text style={styles.emptyTitle}>No hay productos cargados hoy</Text><Text style={styles.emptyText}>Se suman los productos de los pedidos pendientes con entrega para hoy.</Text></View>}
+            </View> : <>
+            <View style={styles.driverSectionHeader}><View><Text style={styles.sectionTitle}>Pedidos {driverStatusFilter === 'PENDING' ? 'pendientes' : driverStatusFilter === 'DELIVERED' ? 'entregados' : 'no entregados'}</Text><Text style={styles.sectionHint}>{visibleDriverOrders.length} pedidos</Text></View></View>
+            <View style={styles.driverStatusFilters}>{([['PENDING', 'Pendiente'], ['DELIVERED', 'Entregado'], ['CANCELLED', 'No entregado']] as const).map(([status, label]) => <TouchableOpacity key={status} style={[styles.driverStatusFilter, driverStatusFilter === status && styles.driverStatusFilterActive]} onPress={() => setDriverStatusFilter(status)}><Text style={[styles.driverStatusFilterText, driverStatusFilter === status && styles.driverStatusFilterTextActive]}>{label}</Text></TouchableOpacity>)}</View>
+            <View style={styles.driverSearchBox}><Ionicons name="search-outline" size={19} color={colors.textSecondary} /><TextInput style={styles.driverSearchInput} value={driverOrderSearch} onChangeText={setDriverOrderSearch} placeholder="Buscar por razón social" placeholderTextColor={colors.textSecondary} maxLength={25} autoCorrect={false} />{!!driverOrderSearch && <TouchableOpacity onPress={() => setDriverOrderSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+            {visibleDriverOrders.map(order => {
+              const expanded = expandedDriverOrderId === order.id;
+              const failedAttempt = latestAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]);
+              const isNoDelivered = order.status === 'CANCELLED' || hasFailedAttemptForScheduledDate(order, driverDeliveryAttempts[order.id]) || Boolean(driverCancellationReasons[order.id]);
+              return <View key={order.id} style={styles.driverOrderCard}>
+              <TouchableOpacity style={styles.driverOrderHeading} onPress={() => setExpandedDriverOrderId(expanded ? null : order.id)} accessibilityRole="button" accessibilityState={{ expanded }}><View style={styles.driverOrderCopy}><Text style={styles.driverCustomerName} numberOfLines={2}>{order.customerName === 'Cliente' ? 'Razón social no disponible' : order.customerName}</Text><Text style={styles.assignedOrderCode}>Pedido {order.code}</Text></View><View style={[styles.driverPendingPill, order.status === 'DELIVERED' && styles.driverDeliveredPill, isNoDelivered && styles.driverCancelledPill]}><Text style={[styles.driverPendingText, order.status === 'DELIVERED' && styles.driverDeliveredText, isNoDelivered && styles.driverCancelledText]}>{isNoDelivered ? 'No entregado' : orderStatusLabel[order.status] ?? order.status}</Text></View><Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textSecondary} /></TouchableOpacity>
+              {!!order.deliveryAddress && <View style={styles.driverDetailRow}><Ionicons name="location-outline" size={17} color={colors.textSecondary} /><Text style={styles.driverDetailText}>{order.deliveryAddress}</Text></View>}
+              {expanded && <>
+              <View style={styles.driverProducts}><Text style={styles.driverProductsTitle}>Productos</Text>{order.items?.length ? order.items.map((item, index) => <View key={`${item.productId}-${index}`} style={styles.driverProductRow}><Text style={styles.driverDetailText}>{item.productName}{item.unit ? ` (${item.unit})` : ''}</Text><Text style={styles.driverProductQuantity}>× {item.quantity}</Text></View>) : <Text style={styles.driverDetailText}>No hay productos detallados en este pedido.</Text>}</View>
+              {isNoDelivered && !!(failedAttempt?.failureReason || driverCancellationReasons[order.id]) && <Text style={styles.driverLoadedStatus}>Motivo: {failedAttempt?.failureReason ?? driverCancellationReasons[order.id]}</Text>}
+              <View style={styles.driverOrderMeta}><Text style={styles.assignedOrderMeta}>{order.itemCount} unidades</Text><Text style={styles.assignedOrderMeta}>{formatDate(order.deliveryDate || order.createdAt)}</Text></View>
+              {driverStatusFilter === 'PENDING' && <View style={styles.driverOrderActions}><TouchableOpacity style={styles.driverCancelButton} onPress={() => { setDriverCancelOrder(order); setDriverCancelStage('confirm'); setDriverCancelReasonOption(null); setDriverCancelReasonText(''); setDriverCancelIdempotencyKey(`driver-failed-attempt-${order.id}-${Date.now()}`); setDriverOrderError(null); }} disabled={driverOrderBusyId === order.id}><Text style={styles.driverCancelText}>No entregado</Text></TouchableOpacity><TouchableOpacity style={styles.driverDeliverButton} onPress={() => openDriverDelivery(order)} disabled={driverOrderBusyId === order.id}><Ionicons name="checkmark-circle-outline" size={18} color={colors.textInverse} /><Text style={styles.driverDeliverText}>Marcar entregado</Text></TouchableOpacity></View>}
+              </>}
+            </View>;})}
+            {!visibleDriverOrders.length && <View style={styles.driverEmpty}><Ionicons name={driverOrderSearch ? 'search-outline' : 'checkmark-circle-outline'} size={30} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{driverOrderSearch ? 'No se encontraron pedidos' : `No hay pedidos ${driverStatusFilter === 'PENDING' ? 'pendientes' : driverStatusFilter === 'DELIVERED' ? 'entregados' : 'no entregados'}`}</Text><Text style={styles.emptyText}>{driverOrderSearch ? 'Probá con otra razón social.' : 'Los pedidos asignados van a aparecer acá.'}</Text></View>}
+            </>}
+          </>
+        )}
+      </ScrollView>
+      <Modal visible={!!driverCancelOrder} transparent animationType="fade" onRequestClose={() => !driverOrderBusyId && (driverCancelStage === 'reason' ? setDriverCancelStage('confirm') : setDriverCancelOrder(null))}>
+        <View style={styles.modalBackdrop}><View style={styles.driverCancelModal}>
+          <View style={styles.driverCancelIcon}><Ionicons name="close-circle-outline" size={27} color={colors.error} /></View>
+          {driverCancelStage === 'confirm' ? <>
+            <Text style={styles.driverCancelTitle}>Marcar como no entregado</Text>
+            <Text style={styles.driverCancelMessage}>¿Estás seguro de marcar el pedido {driverCancelOrder?.code} de {driverCancelOrder?.customerName} como no entregado?</Text>
+          </> : <>
+            <Text style={styles.driverCancelTitle}>Motivo de no entrega</Text>
+            <Text style={styles.driverCancelMessage}>Seleccioná una opción o escribí el motivo.</Text>
+            <ScrollView style={styles.driverReasonList} keyboardShouldPersistTaps="handled">{deliveryFailureReasons.map(reason => <TouchableOpacity key={reason} style={[styles.driverReasonOption, driverCancelReasonOption === reason && styles.driverReasonOptionSelected]} onPress={() => { setDriverCancelReasonOption(reason); setDriverOrderError(null); }}><Ionicons name={driverCancelReasonOption === reason ? 'radio-button-on' : 'radio-button-off'} size={18} color={driverCancelReasonOption === reason ? colors.primary : colors.textSecondary} /><Text style={[styles.driverReasonText, driverCancelReasonOption === reason && styles.driverReasonTextSelected]}>{reason}</Text></TouchableOpacity>)}</ScrollView>
+            <TextInput style={styles.driverReasonInput} value={driverCancelReasonText} onChangeText={value => { setDriverCancelReasonText(value); setDriverOrderError(null); }} placeholder="Escribir otro motivo o agregar detalle" placeholderTextColor={colors.textSecondary} maxLength={250} multiline />
+          </>}
+          {!!driverOrderError && <Text style={styles.driverCancelError}>{driverOrderError}</Text>}
+          <View style={styles.deliveryActions}><TouchableOpacity style={styles.deliveryCancelButton} onPress={() => { if (driverCancelStage === 'reason') { setDriverCancelStage('confirm'); setDriverOrderError(null); } else { setDriverCancelOrder(null); setDriverOrderError(null); } }} disabled={!!driverOrderBusyId}><Text style={styles.deliveryCancelText}>{driverCancelStage === 'reason' ? 'Volver' : 'No, volver'}</Text></TouchableOpacity><TouchableOpacity style={styles.driverCancelConfirmButton} onPress={() => driverCancelStage === 'confirm' ? (setDriverCancelStage('reason'), setDriverOrderError(null)) : void cancelAssignedOrder()} disabled={!!driverOrderBusyId}>{driverOrderBusyId === driverCancelOrder?.id ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.driverCancelConfirmText}>{driverCancelStage === 'confirm' ? 'Sí, continuar' : 'Confirmar no entrega'}</Text>}</TouchableOpacity></View>
+        </View></View>
+      </Modal>
+      <Modal visible={!!driverDeliveryOrder} transparent animationType="slide" onRequestClose={() => !driverDeliverySubmitting && setDriverDeliveryOrder(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.driverPaymentModal}>
+          <View style={styles.deliveryHeader}><View style={styles.assignmentModalIcon}><Ionicons name="checkmark-done-outline" size={22} color={colors.primary} /></View><View style={styles.assignmentModalTitleWrap}><Text style={styles.assignmentModalTitle}>Confirmar entrega</Text><Text style={styles.assignmentModalHint}>{driverDeliveryOrder?.code} · {driverDeliveryOrder?.customerName}</Text></View><TouchableOpacity onPress={() => setDriverDeliveryOrder(null)} disabled={driverDeliverySubmitting}><Ionicons name="close" size={22} color={colors.textSecondary} /></TouchableOpacity></View>
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.driverPaymentBody}>
+            <View style={styles.deliveryTotalRow}><Text style={styles.deliveryTotalLabel}>Total del pedido</Text><Text style={styles.deliveryTotalValue}>{money(driverDeliveryOrder?.total ?? 0)}</Text></View>
+            <Text style={styles.driverPaymentPrompt}>¿Cómo se resolvió el pago de este pedido?</Text>
+            {([['full', 'Pagó completo', `Registrar ${money(driverDeliveryOrder?.total ?? 0)} como pago`], ['account', 'Cuenta corriente', 'Dejar el total pendiente en la cuenta del cliente'], ['partial', 'Pago parcial', 'Registrar un importe y dejar el saldo pendiente']] as const).map(([choice, label, hint]) => <TouchableOpacity key={choice} style={[styles.deliveryChoice, driverPaymentChoice === choice && styles.deliveryChoiceSelected]} onPress={() => { setDriverPaymentChoice(choice); setDriverPaymentAmount(''); setDriverMixedCashAmount(''); setDriverDeliveryError(null); }}><Ionicons name={driverPaymentChoice === choice ? 'radio-button-on' : 'radio-button-off'} size={20} color={driverPaymentChoice === choice ? colors.primary : colors.textSecondary} /><View style={styles.deliveryChoiceCopy}><Text style={styles.deliveryChoiceTitle}>{label}</Text><Text style={styles.deliveryChoiceSubtitle}>{hint}</Text></View></TouchableOpacity>)}
+            {driverPaymentChoice === 'partial' && <View style={styles.deliveryAmountField}><Text style={styles.deliveryAmountLabel}>Importe recibido</Text><TextInput value={formatArgentineAmountInput(driverPaymentAmount)} onChangeText={value => { setDriverPaymentAmount(value.replace(/\D/g, '').slice(0, 11)); setDriverDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="number-pad" maxLength={14} /><Text style={styles.deliveryAmountHint}>Quedarán {money(Math.max(0, (driverDeliveryOrder?.total ?? 0) - (Number(driverPaymentAmount) || 0)))} en cuenta corriente.</Text></View>}
+            {driverPaymentChoice !== null && driverPaymentChoice !== 'account' && <View style={styles.deliveryAmountField}><Text style={styles.deliveryAmountLabel}>Forma de pago</Text><View style={styles.paymentMethods}>{([['cash', 'Efectivo'], ['transfer', 'Transferencia'], ['mixed', 'Mixto']] as const).map(([method, label]) => <TouchableOpacity key={method} style={[styles.paymentMethod, driverPaymentMethod === method && styles.paymentMethodActive]} onPress={() => setDriverPaymentMethod(method)}><Text style={[styles.paymentMethodText, driverPaymentMethod === method && styles.paymentMethodTextActive]}>{label}</Text></TouchableOpacity>)}</View>{driverPaymentMethod === 'mixed' && <TextInput value={formatArgentineAmountInput(driverMixedCashAmount)} onChangeText={value => setDriverMixedCashAmount(value.replace(/\D/g, '').slice(0, 11))} style={styles.deliveryAmountInput} placeholder="Importe en efectivo" keyboardType="number-pad" maxLength={14} />}</View>}
+            {!!driverDeliveryError && <View style={styles.deliveryErrorBox}><Ionicons name="alert-circle-outline" size={18} color={colors.error} /><Text style={styles.deliveryErrorText}>{driverDeliveryError}</Text></View>}
+            <Text style={styles.deliveryFootnote}>{driverPaymentChoice === 'account' ? 'El importe total queda pendiente en la cuenta corriente del cliente.' : driverPaymentChoice ? 'La forma de pago se incluye en el comprobante PDF.' : 'Elegí una opción para registrar la entrega.'}</Text>
+            <View style={styles.deliveryActions}><TouchableOpacity style={styles.deliveryCancelButton} onPress={() => setDriverDeliveryOrder(null)} disabled={driverDeliverySubmitting}><Text style={styles.deliveryCancelText}>Volver</Text></TouchableOpacity><TouchableOpacity style={[styles.deliveryConfirmButton, (!driverPaymentChoice || driverDeliverySubmitting) && styles.deliveryConfirmDisabled]} onPress={() => void confirmDriverDelivery()} disabled={!driverPaymentChoice || driverDeliverySubmitting}>{driverDeliverySubmitting ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.deliveryConfirmText}>Confirmar entrega</Text>}</TouchableOpacity></View>
+          </ScrollView>
+        </View></View>
+      </Modal>
+      <Modal visible={!!driverReceiptPrompt} transparent animationType="fade" onRequestClose={() => !driverReceiptSharing && setDriverReceiptPrompt(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.driverReceiptModal}><View style={styles.deliveryHeader}><View style={styles.assignmentModalIcon}><Ionicons name="document-text-outline" size={22} color={colors.primary} /></View><View style={styles.assignmentModalTitleWrap}><Text style={styles.assignmentModalTitle}>Entrega registrada</Text><Text style={styles.assignmentModalHint}>{driverReceiptPrompt?.data.code} · {driverReceiptPrompt?.data.customer}</Text></View></View><Text style={styles.receiptSuccessText}>La entrega y el pago se registraron correctamente.</Text><Text style={styles.receiptPromptText}>¿Querés compartir el comprobante PDF?</Text>
+          {driverReceiptPrompt?.email && <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('email')} disabled={!!driverReceiptSharing}><Ionicons name="mail-outline" size={19} color={colors.primary} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>Correo electrónico</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt.email}</Text></View>{driverReceiptSharing === 'email' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>}
+          {driverReceiptPrompt?.phone && <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('whatsapp')} disabled={!!driverReceiptSharing}><Ionicons name="logo-whatsapp" size={19} color={colors.success} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>WhatsApp</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt.phone}</Text></View>{driverReceiptSharing === 'whatsapp' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>}
+          {!!driverReceiptError && <Text style={styles.assignmentErrorText}>{driverReceiptError}</Text>}<TouchableOpacity style={styles.receiptDismiss} onPress={() => setDriverReceiptPrompt(null)} disabled={!!driverReceiptSharing}><Text style={styles.confirmBackText}>Ahora no</Text></TouchableOpacity>
+        </View></View>
+      </Modal>
+      </>
+    );
+  }
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
       <View style={styles.header}>
@@ -495,6 +780,59 @@ export default function LogisticsScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   container: { padding: spacing.lg, paddingBottom: spacing.xxxl },
+  driverContainer: { padding: spacing.lg, paddingBottom: spacing.xxxl },
+  driverHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.lg },
+  driverHeaderIcon: { width: 48, height: 48, borderRadius: radius.md, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  driverHeaderCopy: { flex: 1 },
+  driverSectionHeader: { marginBottom: spacing.md },
+  driverTabs: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
+  driverTab: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, borderBottomWidth: 2, borderBottomColor: colors.border },
+  driverTabActive: { borderBottomColor: colors.primary },
+  driverTabText: { ...typography.label, color: colors.textSecondary },
+  driverTabTextActive: { color: colors.primary, fontWeight: '700' },
+  driverSectionNote: { ...typography.caption, color: colors.textSecondary, marginBottom: spacing.sm },
+  driverCashCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.lg },
+  driverCashHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+  driverCashRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.xs },
+  driverCashAmount: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
+  driverCashTotalRow: { flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: colors.border, marginTop: spacing.xs, paddingTop: spacing.sm },
+  driverCashTotalLabel: { ...typography.label, color: colors.textPrimary, fontWeight: '700' },
+  driverCashTotalValue: { ...typography.label, color: colors.primary, fontWeight: '800' },
+  driverLoadedProduct: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, marginBottom: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  driverLoadedProductCopy: { flex: 1, gap: 2 },
+  driverLoadedQuantity: { ...typography.subheading, color: colors.primary, fontWeight: '800' },
+  driverLoadedStatus: { ...typography.caption, color: colors.warning, fontWeight: '700', marginTop: 2 },
+  driverLoadedStatusCancelled: { color: colors.error },
+  driverStatusFilters: { flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.md },
+  driverStatusFilter: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, borderRadius: radius.full, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  driverStatusFilterActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  driverStatusFilterText: { ...typography.caption, color: colors.textSecondary },
+  driverStatusFilterTextActive: { color: colors.primary, fontWeight: '700' },
+  driverSearchBox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 48, paddingHorizontal: spacing.md, marginBottom: spacing.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  driverSearchInput: { flex: 1, color: colors.textPrimary, ...typography.body },
+  driverOrderCard: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.md },
+  driverOrderHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  driverOrderCopy: { flex: 1 },
+  driverCustomerName: { ...typography.subheading, color: colors.textPrimary, fontWeight: '700' },
+  driverPendingPill: { backgroundColor: colors.warningLight, borderRadius: radius.full, paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  driverPendingText: { ...typography.caption, color: colors.warning, fontWeight: '700' },
+  driverDeliveredPill: { backgroundColor: colors.successLight, borderRadius: radius.full, paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  driverDeliveredText: { ...typography.caption, color: colors.success, fontWeight: '700' },
+  driverCancelledPill: { backgroundColor: colors.errorLight, borderRadius: radius.full, paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  driverCancelledText: { ...typography.caption, color: colors.error, fontWeight: '700' },
+  driverOrderMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.sm },
+  driverDetailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs, marginTop: spacing.sm },
+  driverDetailText: { ...typography.caption, color: colors.textSecondary, flexShrink: 1 },
+  driverProducts: { marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: spacing.xs },
+  driverProductsTitle: { ...typography.label, color: colors.textPrimary, fontWeight: '700', marginBottom: spacing.xs },
+  driverProductRow: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm },
+  driverProductQuantity: { ...typography.caption, color: colors.textPrimary, fontWeight: '700' },
+  driverOrderActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.border },
+  driverCancelButton: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.errorLight },
+  driverCancelText: { ...typography.label, color: colors.error, fontWeight: '700' },
+  driverDeliverButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, backgroundColor: colors.success },
+  driverDeliverText: { ...typography.label, color: colors.textInverse, fontWeight: '700' },
+  driverEmpty: { alignItems: 'center', padding: spacing.xl, marginTop: spacing.md, backgroundColor: colors.surface, borderRadius: radius.md },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xl },
   eyebrow: { ...typography.caption, color: colors.primary, fontWeight: '800', letterSpacing: 1.4 },
   title: { ...typography.heading, color: colors.textPrimary, marginTop: 3 },
@@ -579,6 +917,65 @@ const styles = StyleSheet.create({
   refreshText: { ...typography.caption, color: colors.primary, fontWeight: '600' },
   emptyTruckOrders: { padding: spacing.lg, alignItems: 'center', backgroundColor: colors.surface, borderRadius: radius.md },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(20, 12, 10, 0.48)', justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
+  driverPaymentModal: { width: '100%', maxWidth: 460, maxHeight: '88%', backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  driverReceiptModal: { width: '100%', maxWidth: 460, backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  driverCancelModal: { width: '100%', maxWidth: 420, maxHeight: '90%', backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg },
+  driverCancelIcon: { width: 48, height: 48, borderRadius: radius.full, backgroundColor: colors.errorLight, alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: spacing.md },
+  driverCancelTitle: { ...typography.subheading, color: colors.textPrimary, fontWeight: '700', textAlign: 'center' },
+  driverCancelMessage: { ...typography.body, color: colors.textSecondary, textAlign: 'center', marginTop: spacing.sm },
+  driverCancelError: { ...typography.caption, color: colors.error, marginTop: spacing.sm },
+  driverReasonList: { maxHeight: 230, marginTop: spacing.md },
+  driverReasonOption: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.sm, paddingHorizontal: spacing.xs, borderBottomWidth: 1, borderBottomColor: colors.border },
+  driverReasonOptionSelected: { backgroundColor: colors.primaryLight },
+  driverReasonText: { ...typography.caption, color: colors.textPrimary },
+  driverReasonTextSelected: { color: colors.primary, fontWeight: '700' },
+  driverReasonInput: { ...typography.body, color: colors.textPrimary, minHeight: 72, textAlignVertical: 'top', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginTop: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  driverCancelConfirmButton: { flex: 1.4, paddingVertical: spacing.md, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md, backgroundColor: colors.error },
+  driverCancelConfirmText: { ...typography.label, color: colors.textInverse, fontWeight: '700' },
+  assignmentModalIcon: { width: 42, height: 42, borderRadius: radius.md, backgroundColor: colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  assignmentModalTitleWrap: { flex: 1 },
+  assignmentModalTitle: { ...typography.subheading, color: colors.textPrimary, fontWeight: '700' },
+  assignmentModalHint: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  deliveryHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
+  driverPaymentBody: { paddingTop: spacing.md, paddingBottom: spacing.xs },
+  deliveryTotalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.primaryLight },
+  deliveryTotalLabel: { ...typography.caption, color: colors.textSecondary, fontWeight: '600' },
+  deliveryTotalValue: { ...typography.subheading, color: colors.primary, fontWeight: '800' },
+  driverPaymentPrompt: { ...typography.label, color: colors.textPrimary, marginTop: spacing.lg, marginBottom: spacing.sm },
+  deliveryChoice: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, marginBottom: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  deliveryChoiceSelected: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  deliveryChoiceCopy: { flex: 1 },
+  deliveryChoiceTitle: { ...typography.label, color: colors.textPrimary },
+  deliveryChoiceSubtitle: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  deliveryAmountField: { marginTop: spacing.sm, marginBottom: spacing.sm },
+  paymentMethods: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginBottom: spacing.sm },
+  paymentMethod: { borderWidth: 1, borderColor: colors.border, borderRadius: radius.full, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.surface },
+  paymentMethodActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  paymentMethodText: { ...typography.caption, color: colors.textSecondary },
+  paymentMethodTextActive: { color: colors.primary, fontWeight: '700' },
+  deliveryAmountLabel: { ...typography.caption, color: colors.textPrimary, fontWeight: '700', marginBottom: spacing.xs },
+  deliveryAmountInput: { ...typography.body, color: colors.textPrimary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  deliveryAmountHint: { ...typography.caption, color: colors.textSecondary, marginTop: spacing.xs },
+  deliveryErrorBox: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs, padding: spacing.sm, marginTop: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.errorLight },
+  deliveryErrorText: { ...typography.caption, color: colors.error, flex: 1, lineHeight: 18 },
+  deliveryFootnote: { ...typography.caption, color: colors.textSecondary, lineHeight: 18, marginTop: spacing.sm },
+  deliveryActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+  deliveryCancelButton: { flex: 1, paddingVertical: spacing.md, alignItems: 'center', borderRadius: radius.md, backgroundColor: colors.background },
+  deliveryCancelText: { ...typography.label, color: colors.textSecondary },
+  deliveryConfirmButton: { flex: 1.4, paddingVertical: spacing.md, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md, backgroundColor: colors.primary },
+  deliveryConfirmDisabled: { opacity: 0.55 },
+  deliveryConfirmText: { ...typography.label, color: colors.textInverse },
+  receiptSuccessText: { ...typography.caption, color: colors.success, fontWeight: '700', marginTop: spacing.md },
+  receiptPromptText: { ...typography.body, color: colors.textPrimary, marginTop: spacing.md, marginBottom: spacing.sm },
+  receiptChannelButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 62, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, backgroundColor: colors.surface },
+  receiptChannelCopy: { flex: 1 },
+  receiptChannelTitle: { ...typography.label, color: colors.textPrimary, fontWeight: '700' },
+  receiptChannelTarget: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  receiptNoContact: { ...typography.caption, color: colors.textSecondary, paddingVertical: spacing.sm },
+  receiptHint: { ...typography.caption, color: colors.textSecondary, lineHeight: 18, marginTop: spacing.md },
+  receiptDismiss: { alignItems: 'center', paddingVertical: spacing.md, marginTop: spacing.xs },
+  confirmBackText: { ...typography.label, color: colors.textSecondary },
+  assignmentErrorText: { ...typography.caption, color: colors.error, marginTop: spacing.sm },
   modalCard: { width: '100%', maxWidth: 440, maxHeight: '90%', backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl },
   modalTitle: { ...typography.subheading, color: colors.textPrimary, marginBottom: spacing.md },
   modalError: { ...typography.caption, color: colors.error, marginBottom: spacing.sm },

@@ -58,8 +58,8 @@ export default function OrdersScreen() {
   const params = useLocalSearchParams<{ newClientId?: string }>();
   const newClientId = Array.isArray(params.newClientId) ? params.newClientId[0] : params.newClientId;
   const user = useAuthStore(state => state.user);
-  const { canAssignOrdersToTruck, canViewOrders, canManageClients, canRegisterSale, isAdmin } = usePermissions();
-  const isDriver = user?.role === 'delivery';
+  const { canAssignOrdersToTruck, canViewOrders, canManageClients, canRegisterSale, isAdmin, isDelivery } = usePermissions();
+  const isDriver = isDelivery;
   const { items, total, itemCount, addItem, updateQty, clearCart } = useCartStore();
   const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
   const [clients, setClients] = useState<IClientSummary[]>([]);
@@ -77,6 +77,8 @@ export default function OrdersScreen() {
   const [productsExpanded, setProductsExpanded] = useState(false);
   const [productPickerOpen, setProductPickerOpen] = useState(false);
   const [productPickerSearch, setProductPickerSearch] = useState('');
+  const [productPickerPage, setProductPickerPage] = useState(1);
+  const [productQuantities, setProductQuantities] = useState<Record<string, string>>({});
   const [availableProducts, setAvailableProducts] = useState<IProduct[]>([]);
   const [loadingProductPicker, setLoadingProductPicker] = useState(false);
   const [productPickerError, setProductPickerError] = useState<string | null>(null);
@@ -133,6 +135,7 @@ export default function OrdersScreen() {
   const [deliverySubmitting, setDeliverySubmitting] = useState(false);
 
   useEffect(() => { if (!canViewOrders) router.replace('/(tabs)/profile' as any); }, [canViewOrders, router]);
+  useEffect(() => { if (isDriver) router.replace('/(tabs)/logistics' as any); }, [isDriver, router]);
 
   const loadClients = useCallback(async () => {
     setLoadingClients(true);
@@ -189,6 +192,7 @@ export default function OrdersScreen() {
       normalizeSearch(product.category.name).includes(query),
     );
   }, [availableProducts, productPickerSearch]);
+  const pagePickerProducts = useMemo(() => pageItems(visiblePickerProducts, productPickerPage), [visiblePickerProducts, productPickerPage]);
 
   const visibleHistoryOrders = useMemo(() => {
     const clientQuery = normalizeSearch(historyClient);
@@ -205,6 +209,7 @@ export default function OrdersScreen() {
   useEffect(() => setTruckPickerPage(1), [truckSearch]);
   useEffect(() => setAssignmentTruckPage(1), [assignmentOrder]);
   useEffect(() => setEditProductPage(1), [editProducts]);
+  useEffect(() => setProductPickerPage(1), [productPickerSearch]);
 
   const loadOrders = useCallback(async () => {
     setLoadingOrders(true);
@@ -214,7 +219,13 @@ export default function OrdersScreen() {
         setOrders([]);
         setOrderError('Tu usuario todavía no está asignado a un camión. Pedile a un administrador que lo configure.');
       } else if (isDriver) {
-        setOrders(await salesService.getOrdersByTruck(Number(user?.truckId)));
+        const fetched = await salesService.getOrdersByTruck(Number(user?.truckId));
+        const dueTime = (order: OrderListItem) => {
+          const parsed = Date.parse(order.deliveryDate || order.createdAt);
+          return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed;
+        };
+        fetched.sort((a, b) => dueTime(a) - dueTime(b));
+        setOrders(fetched);
       } else {
         const fetched = await salesService.getOrdersWithTruckDetails(isDriver ? { truckId: Number(user?.truckId) } : {});
         const dueTime = (order: OrderListItem) => {
@@ -459,10 +470,13 @@ export default function OrdersScreen() {
       }
       const created = await salesService.createOrder({ customerId, deliveryAddressId, items: orderItems, deliveryDate, ...(truckId ? { truckId } : {}) });
       clearCart();
+      setProductQuantities({});
       setSelectedClient(null);
       setAddresses([]);
       setSelectedAddress(null);
       setSelectedTruckId(null);
+      setDeliveryDate(localToday());
+      setProductsExpanded(false);
       setSuccessMessage(`${created.id ? `Pedido ${created.code} creado.` : 'Pedido creado.'}${assignedTruck ? ` Asignado a ${assignedTruck.licensePlate}.` : ' Sin camión asignado.'}`);
       setMode('history');
     } catch (error) {
@@ -766,6 +780,32 @@ export default function OrdersScreen() {
       setLoadingProductPicker(false);
     }
   };
+  const setPickerProductQuantity = (product: IProduct, quantity: number) => {
+    const safeQuantity = Math.max(0, Math.min(999999, Math.floor(quantity)));
+    const currentQuantity = items.find(item => item.productId === product.id)?.qty ?? 0;
+    if (safeQuantity === 0) {
+      if (currentQuantity > 0) updateQty(product.id, 0);
+    } else if (currentQuantity > 0) {
+      updateQty(product.id, safeQuantity);
+    } else {
+      addItem(product, safeQuantity);
+    }
+    setProductQuantities(current => ({ ...current, [product.id]: String(safeQuantity) }));
+  };
+  const startNewOrder = () => {
+    if (mode === 'new') return;
+    clearCart();
+    setProductQuantities({});
+    setSelectedClient(null);
+    setAddresses([]);
+    setSelectedAddress(null);
+    setSelectedTruckId(null);
+    setDeliveryDate(localToday());
+    setProductsExpanded(false);
+    setOrderError(null);
+    setSuccessMessage(null);
+    setMode('new');
+  };
   const renderOrder = (order: OrderListItem) => {
     const truck = trucks.find(item => String(item.id) === order.truckId);
     const assignedTruckName = order.truckLicensePlate ?? truck?.licensePlate ?? (order.truckId ? `Camión #${order.truckId}` : 'Sin camión asignado');
@@ -832,7 +872,7 @@ export default function OrdersScreen() {
       </View>
 
       {canRegisterSale && !isDriver && <View style={styles.modeSwitch}>
-        <TouchableOpacity style={[styles.modeButton, mode === 'new' && styles.modeButtonActive]} onPress={() => setMode('new')}>
+        <TouchableOpacity style={[styles.modeButton, mode === 'new' && styles.modeButtonActive]} onPress={startNewOrder}>
           <Text style={[styles.modeText, mode === 'new' && styles.modeTextActive]}>Nuevo pedido</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.modeButton, mode === 'history' && styles.modeButtonActive]} onPress={() => setMode('history')}>
@@ -1081,12 +1121,24 @@ export default function OrdersScreen() {
           <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={productPickerSearch} onChangeText={setProductPickerSearch} placeholder="Buscar producto, código o categoría" placeholderTextColor={colors.textSecondary} maxLength={60} autoCorrect={false} />{!!productPickerSearch && <TouchableOpacity onPress={() => setProductPickerSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
           {!!productPickerError && <FormErrorBanner message={productPickerError} onRetry={() => void openCatalog()} disabled={loadingProductPicker} />}
           {loadingProductPicker ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <ScrollView keyboardShouldPersistTaps="handled">
-            {visiblePickerProducts.map(product => <TouchableOpacity key={product.id} style={styles.selectorOption} onPress={() => addItem(product)} accessibilityRole="button">
-              <View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{product.name}</Text><Text style={styles.selectorOptionSub}>{product.category.name} · {money(product.price)} / {product.unit}{product.sku ? ` · ${product.sku}` : ''}</Text></View>
-              <Ionicons name={items.some(item => item.productId === product.id) ? 'add-circle' : 'add-circle-outline'} size={23} color={colors.primary} />
-            </TouchableOpacity>)}
+            {pagePickerProducts.map(product => {
+              const key = String(product.id);
+              const inCart = items.find(item => String(item.productId) === key)?.qty ?? 0;
+              const quantity = productQuantities[key] ?? String(inCart);
+              return <View key={key} style={styles.selectorOption}>
+                <View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{product.name}</Text><Text style={styles.selectorOptionSub}>{product.category.name} · {money(product.price)} / {product.unit}{product.sku ? ` · ${product.sku}` : ''}</Text><Text style={styles.selectorOptionSub}>En el pedido: {inCart} {product.unit}</Text></View>
+                <View style={styles.productQuantityControls}>
+                  <TextInput style={styles.productQuantityInput} value={quantity} onChangeText={value => setProductQuantities(current => ({ ...current, [key]: value.replace(/\D/g, '').slice(0, 6) }))} onEndEditing={() => { const parsed = Number(quantity); if (Number.isInteger(parsed)) setPickerProductQuantity(product, parsed); }} keyboardType="number-pad" inputMode="numeric" maxLength={6} accessibilityLabel={`Cantidad de ${product.name}`} />
+                  <View style={styles.productQuantityStepper}>
+                    <TouchableOpacity style={styles.productStepButton} onPress={() => setPickerProductQuantity(product, Math.max(0, Number(quantity || 0) - 1))} accessibilityRole="button" accessibilityLabel={`Restar una unidad de ${product.name}`}><Ionicons name="remove" size={16} color={colors.primary} /></TouchableOpacity>
+                    <TouchableOpacity style={styles.productStepButton} onPress={() => setPickerProductQuantity(product, Number(quantity || 0) + 1)} accessibilityRole="button" accessibilityLabel={`Sumar una unidad de ${product.name}`}><Ionicons name="add" size={16} color={colors.primary} /></TouchableOpacity>
+                  </View>
+                </View>
+              </View>;
+            })}
             {!visiblePickerProducts.length && <Text style={styles.selectorEmpty}>{availableProducts.length ? 'No hay productos que coincidan con la búsqueda.' : 'No hay productos activos disponibles.'}</Text>}
           </ScrollView>}
+          {!loadingProductPicker && <PaginationControls page={productPickerPage} totalItems={visiblePickerProducts.length} onPageChange={setProductPickerPage} />}
           {!!items.length && <Text style={styles.selectorHint}>{items.length} {items.length === 1 ? 'producto' : 'productos'} en el pedido · {money(total())}</Text>}
         </View></View>
       </Modal>
@@ -1174,6 +1226,10 @@ const styles = StyleSheet.create({
   selectorOptionCopy: { flex: 1 },
   selectorOptionTitle: { ...typography.label, color: colors.textPrimary },
   selectorOptionSub: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
+  productQuantityControls: { alignItems: 'center', gap: 3 },
+  productQuantityInput: { width: 54, height: 40, textAlign: 'center', ...typography.label, color: colors.textPrimary, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm },
+  productQuantityStepper: { flexDirection: 'row', gap: spacing.xs },
+  productStepButton: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primaryLight, borderRadius: radius.sm },
   selectorEmpty: { ...typography.body, color: colors.textSecondary, textAlign: 'center', padding: spacing.xl },
   selectorHint: { ...typography.caption, color: colors.textSecondary, textAlign: 'center', paddingTop: spacing.md },
   pendingPaymentBanner: { padding: spacing.md, marginBottom: spacing.md, borderRadius: radius.md, backgroundColor: colors.errorLight },
