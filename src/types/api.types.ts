@@ -4,7 +4,7 @@ export interface IUser {
   id: string;
   username: string;
   fullName: string;
-  role: 'owner' | 'seller' | 'delivery' | 'manager' | 'warehouse' | 'unknown';
+  role: 'owner' | 'seller' | 'delivery' | 'manager' | 'depot' | 'unknown';
   roleId?: string;
   roleName?: string;
   permissions: string[];
@@ -70,6 +70,7 @@ export interface IClient {
   active: boolean;
   addresses: IAddress[];
   totalDebt: number;
+  debtBalanceAvailable?: boolean;
 }
 
 export interface IClientSummary {

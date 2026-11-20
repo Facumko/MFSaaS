@@ -10,14 +10,7 @@ import { useAuthStore } from "../store";
 import { parseApiError } from "../utils/apiErrors";
 
 export function useAuth() {
-  const {
-    setAuth,
-    clearAuth,
-    user,
-    isAuthenticated,
-    hasPermission,
-    updateUser,
-  } = useAuthStore();
+  const { setAuth, setAccessToken, clearAuth, user, isAuthenticated, hasPermission, updateUser } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -33,32 +26,19 @@ export function useAuth() {
     try {
       const response = await authService.login(username, password);
       const accountName = response.username || username;
-      // El endpoint de login documentado solo devuelve el token y el nombre.
-      // Los permisos reales siguen siendo aplicados por Spring Security.
-      const user = {
-        id: accountName,
-        username: accountName,
-        fullName: accountName,
-        role: "unknown" as const,
-        permissions: [],
-        tenantId: "",
-      };
-      setAuth(user, response.token, response.tokenType || "Bearer");
+      // Se configura el token para consultar /auth/me sin autenticar la UI
+      // antes de conocer el rol: los guards redirigían mientras role=unknown.
+      setAccessToken(response.token, response.tokenType || 'Bearer');
       try {
         const profile = await authService.getCurrentUser(accountName);
         setAuth(profile, response.token, response.tokenType || "Bearer");
       } catch (profileError) {
-        if (
-          axios.isAxiosError(profileError) &&
-          profileError.response?.status === 401
-        ) {
-          clearAuth();
-          throw new Error(
-            "El servidor emitió un token que no pudo validar al consultar el perfil. Revisá la autenticación del backend.",
-          );
+        clearAuth();
+        if (axios.isAxiosError(profileError) && !profileError.response) {
+          throw new Error('Iniciaste sesión, pero no se pudo conectar con /auth/me para cargar tu rol.');
         }
-        // A successful login remains usable if the optional profile endpoint is temporarily unavailable.
-        console.warn("No se pudo cargar el perfil del backend", profileError);
+        const status = axios.isAxiosError(profileError) ? profileError.response?.status : undefined;
+        throw new Error(`Iniciaste sesión, pero no se pudo cargar tu perfil (${status ?? 'respuesta inválida'}). Revisá /auth/me en el backend.`);
       }
       try {
         if (rememberMe) {

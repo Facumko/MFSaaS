@@ -118,13 +118,12 @@ export default function OrdersScreen() {
   const [orderError, setOrderError] = useState<string | null>(null);
   const [deliveryOrder, setDeliveryOrder] = useState<OrderListItem | null>(null);
   const [deliveryChoice, setDeliveryChoice] = useState<DeliveryPaymentChoice | null>(null);
+  const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState<Exclude<DeliveryPaymentMethod, 'CURRENT_ACCOUNT'> | null>(null);
   const [deliveryAmount, setDeliveryAmount] = useState('');
   const [receiptPaymentMethod, setReceiptPaymentMethod] = useState<ReceiptPaymentMethod>('cash');
   const [mixedCashAmount, setMixedCashAmount] = useState('');
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
-  const [deliveryAlreadyMarked, setDeliveryAlreadyMarked] = useState(false);
   const [deliveryStatusUnknown, setDeliveryStatusUnknown] = useState(false);
-  const [pendingDeliveryPayment, setPendingDeliveryPayment] = useState<PendingDeliveryPayment | null>(null);
   const [deliverySubmitting, setDeliverySubmitting] = useState(false);
 
   useEffect(() => { if (!canViewOrders) router.replace('/(tabs)/profile' as any); }, [canViewOrders, router]);
@@ -197,6 +196,8 @@ export default function OrdersScreen() {
       if (isDriver && !user?.truckId) {
         setOrders([]);
         setOrderError('Tu usuario todavía no está asignado a un camión. Pedile a un administrador que lo configure.');
+      } else if (isDriver) {
+        setOrders(await salesService.getOrdersByTruck(Number(user?.truckId)));
       } else {
         const fetched = await salesService.getOrdersWithTruckDetails(isDriver ? { truckId: Number(user?.truckId) } : {});
         const dueTime = (order: OrderListItem) => {
@@ -413,7 +414,7 @@ export default function OrdersScreen() {
       setOrderError('Elegí una fecha válida desde hoy en adelante.');
       return;
     }
-    const truckId = selectedTruckId == null ? undefined : Number(selectedTruckId);
+    const truckId = !canAssignOrdersToTruck || selectedTruckId == null ? undefined : Number(selectedTruckId);
     if (truckId != null && (!Number.isInteger(truckId) || truckId < 1)) {
       setOrderError('No se pudo identificar el camión seleccionado. Actualizá la pantalla e intentá de nuevo.');
       return;
@@ -529,11 +530,11 @@ export default function OrdersScreen() {
   const openDeliveryConfirmation = (order: OrderListItem) => {
     setDeliveryOrder(order);
     setDeliveryChoice(null);
+    setDeliveryPaymentMethod(null);
     setDeliveryAmount('');
     setReceiptPaymentMethod('cash');
     setMixedCashAmount('');
     setDeliveryError(null);
-    setDeliveryAlreadyMarked(false);
     setDeliveryStatusUnknown(false);
   };
 
@@ -565,18 +566,54 @@ export default function OrdersScreen() {
       setDeliveryError('Elegí cómo se resolvió el pago para continuar.');
       return;
     }
-    const amount = deliveryChoice === 'full'
-      ? order.total
-      : deliveryChoice === 'partial'
-        ? Number(deliveryAmount.trim().replace(',', '.'))
-        : 0;
-    if (deliveryChoice !== 'account' && (!Number.isFinite(amount) || amount <= 0)) {
-      setDeliveryError('El total del pedido no es válido para registrar un pago. Revisá el detalle antes de confirmar la entrega.');
-      return;
-    }
-    if (deliveryChoice === 'partial' && (!Number.isFinite(amount) || amount <= 0 || amount >= order.total)) {
-      setDeliveryError(`Ingresá un pago mayor que cero y menor que el total (${money(order.total)}).`);
-      return;
+    let payload: OrderDeliveryRequest = { paymentMethod: 'CURRENT_ACCOUNT' };
+    if (deliveryChoice !== 'account') {
+      if (!deliveryPaymentMethod) {
+        setDeliveryError('Elegí el medio de pago recibido.');
+        return;
+      }
+      const amount = deliveryChoice === 'full'
+        ? order.total
+        : Number(deliveryAmount.trim().replace(',', '.'));
+      const cashInput = mixedCashAmount.trim();
+      const transferInput = mixedTransferAmount.trim();
+      const cashAmount = deliveryPaymentMethod === 'MIXED'
+        ? (cashInput ? Number(cashInput.replace(',', '.')) : 0)
+        : deliveryPaymentMethod === 'CASH' ? amount : 0;
+      const transferAmount = deliveryPaymentMethod === 'MIXED'
+        ? (transferInput ? Number(transferInput.replace(',', '.')) : 0)
+        : deliveryPaymentMethod === 'TRANSFER' ? amount : 0;
+      const receivedAmount = cashAmount + transferAmount;
+      if (!Number.isFinite(order.total) || order.total <= 0) {
+        setDeliveryError('El total del pedido no es válido. Revisá el detalle antes de confirmar la entrega.');
+        return;
+      }
+      if (deliveryPaymentMethod === 'MIXED') {
+        if (!Number.isFinite(cashAmount) || !Number.isFinite(transferAmount) || cashAmount < 0 || transferAmount < 0) {
+          setDeliveryError('Ingresá importes válidos y no negativos para efectivo y transferencia.');
+          return;
+        }
+        if (deliveryChoice === 'full' && Math.abs(receivedAmount - order.total) > 0.01) {
+          setDeliveryError(`La suma de efectivo y transferencia debe ser igual al total (${money(order.total)}).`);
+          return;
+        }
+        if (deliveryChoice === 'partial' && (!Number.isFinite(receivedAmount) || receivedAmount <= 0 || receivedAmount >= order.total)) {
+          setDeliveryError(`La suma de los medios debe ser mayor que cero y menor que el total (${money(order.total)}).`);
+          return;
+        }
+      } else if (!Number.isFinite(amount) || amount <= 0 || (deliveryChoice === 'partial' && amount >= order.total)) {
+        setDeliveryError(deliveryChoice === 'partial'
+          ? `Ingresá un pago mayor que cero y menor que el total (${money(order.total)}).`
+          : 'El total del pedido no es válido para registrar un pago.');
+        return;
+      }
+      if (deliveryChoice === 'partial' && deliveryPaymentMethod !== 'MIXED') {
+        setDeliveryError('El backend solo acepta importes parciales con el método MIXED. Elegí MIXED e indicá cuánto fue en efectivo y cuánto por transferencia.');
+        return;
+      }
+      payload = deliveryPaymentMethod === 'MIXED'
+        ? { paymentMethod: 'MIXED', cashAmount, transferAmount }
+        : { paymentMethod: deliveryPaymentMethod };
     }
     const cashPart = Number(mixedCashAmount.trim().replace(',', '.'));
     if (deliveryChoice !== 'account' && receiptPaymentMethod === 'mixed' && (!Number.isFinite(cashPart) || cashPart <= 0 || cashPart >= amount)) {
@@ -596,7 +633,7 @@ export default function OrdersScreen() {
     let delivered = deliveryAlreadyMarked;
     let partialPaymentRegistered = false;
     try {
-      if (!delivered && deliveryStatusUnknown) {
+      if (deliveryStatusUnknown) {
         let latest: Record<string, any>;
         try {
           latest = await salesService.getOrder(order.id);
@@ -605,16 +642,21 @@ export default function OrdersScreen() {
         }
         const status = String(latest.status ?? '').toUpperCase();
         if (status === 'DELIVERED') {
-          delivered = true;
-          setDeliveryAlreadyMarked(true);
           setDeliveryStatusUnknown(false);
+          setSuccessMessage(`${order.code} ya figura entregado en el servidor. Revisá la cuenta corriente para confirmar el registro del cobro.`);
+          setDeliveryOrder(null);
+          void loadOrders();
+          return;
         } else if (status === 'IN_ROUTE') {
           setDeliveryStatusUnknown(false);
         } else {
           throw new Error(`El pedido ahora figura como ${status || 'estado desconocido'}; no se reenvió la entrega. Actualizá el historial antes de continuar.`);
         }
       }
-      if (!delivered) {
+      try {
+        await salesService.markDelivered(order.id, payload);
+      } catch (requestError) {
+        let latest: Record<string, any>;
         try {
           await salesService.markDelivered(order.id, deliveryPayment);
         } catch (requestError) {
@@ -642,8 +684,9 @@ export default function OrdersScreen() {
           const customer = raw.customer ?? raw.client ?? {};
           customerId = String(raw.customerId ?? raw.clientId ?? customer.id ?? '');
         }
-        if (!/^\d+$/.test(customerId ?? '') || Number(customerId) < 1) {
-          throw new Error('El pedido ya figura entregado, pero no se pudo identificar al cliente para cargar el pago. Revisá el detalle del pedido antes de volver a intentarlo.');
+        if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') {
+          setDeliveryStatusUnknown(true);
+          throw requestError;
         }
         await ledgerService.registerPayment(customerId, amount, receiptPaymentMethod);
         partialPaymentRegistered = true;
@@ -687,9 +730,7 @@ export default function OrdersScreen() {
           : `Se registró ${money(amount)}; el saldo de ${money(order.total - amount)} quedó en cuenta corriente.`;
       setSuccessMessage(`${order.code} entregado correctamente. ${paidLabel}`);
       setDeliveryOrder(null);
-      setDeliveryAlreadyMarked(false);
       setDeliveryStatusUnknown(false);
-      setPendingDeliveryPayment(null);
       await loadOrders();
     } catch (error) {
       if (delivered) {
@@ -784,12 +825,12 @@ export default function OrdersScreen() {
       <View style={styles.heading}>
         <View>
           <Text style={styles.eyebrow}>VENTAS</Text>
-          <Text style={styles.title}>{!isDriver && mode === 'new' ? 'Nuevo pedido' : 'Pedidos'}</Text>
+          <Text style={styles.title}>{canRegisterSale && !isDriver && mode === 'new' ? 'Nuevo pedido' : 'Pedidos'}</Text>
         </View>
-        <View style={styles.headingIcon}><Ionicons name={mode === 'new' ? 'receipt-outline' : 'reader-outline'} size={22} color={colors.primary} /></View>
+        <View style={styles.headingIcon}><Ionicons name={canRegisterSale && mode === 'new' ? 'receipt-outline' : 'reader-outline'} size={22} color={colors.primary} /></View>
       </View>
 
-      {!isDriver && <View style={styles.modeSwitch}>
+      {canRegisterSale && !isDriver && <View style={styles.modeSwitch}>
         <TouchableOpacity style={[styles.modeButton, mode === 'new' && styles.modeButtonActive]} onPress={() => setMode('new')}>
           <Text style={[styles.modeText, mode === 'new' && styles.modeTextActive]}>Nuevo pedido</Text>
         </TouchableOpacity>
@@ -798,14 +839,13 @@ export default function OrdersScreen() {
         </TouchableOpacity>
       </View>}
 
-      {isDriver || mode === 'history' ? (
+      {isDriver || !canRegisterSale || mode === 'history' ? (
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
             <View><Text style={styles.sectionTitle}>Actividad reciente</Text><Text style={styles.sectionHint}>Pedidos y entregas recientes</Text></View>
             <TouchableOpacity onPress={() => void loadOrders()} style={styles.refreshButton} accessibilityLabel="Actualizar pedidos"><Ionicons name="refresh" size={19} color={colors.primary} /></TouchableOpacity>
           </View>
           {!!successMessage && <View style={styles.successBanner}><Ionicons name="checkmark-circle" size={20} color={colors.success} /><Text style={styles.successBannerText}>{successMessage}</Text><TouchableOpacity onPress={() => setSuccessMessage(null)} accessibilityLabel="Cerrar confirmación"><Ionicons name="close" size={18} color={colors.success} /></TouchableOpacity></View>}
-          {!!pendingDeliveryPayment && !deliveryOrder && <View style={styles.deliveryErrorBox}><Ionicons name="alert-circle-outline" size={18} color={colors.error} /><Text style={styles.deliveryErrorText}>{pendingDeliveryPayment.order.code} se entregó, pero queda un pago por registrar. Verificá antes la cuenta corriente si hubo un corte de conexión.</Text><TouchableOpacity onPress={resumePendingDeliveryPayment}><Text style={styles.assignmentRetry}>Reintentar pago</Text></TouchableOpacity></View>}
           {!!orderError && <FormErrorBanner message={orderError} onRetry={loadOrders} />}
           <View style={styles.historyFilters}><Text style={styles.historyFilterTitle}>Filtrar historial</Text><TextInput style={styles.historyFilterInput} value={historyClient} onChangeText={setHistoryClient} placeholder="Cliente" placeholderTextColor={colors.textSecondary} maxLength={40} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.historyStatusFilters}><TouchableOpacity style={[styles.historyStatusChip, !historyStatus && styles.historyStatusChipActive]} onPress={() => setHistoryStatus(null)}><Text style={[styles.historyStatusText, !historyStatus && styles.historyStatusTextActive]}>Todos</Text></TouchableOpacity>{(Object.keys(statusCopy) as Array<keyof typeof statusCopy>).map(status => { const selected = historyStatus === status; const chipStyle = status === 'DELIVERED' ? styles.statusDelivered : status === 'CANCELLED' ? styles.statusCancelled : status === 'IN_ROUTE' ? styles.statusInRoute : styles.statusPending; const labelStyle = status === 'DELIVERED' ? styles.statusDeliveredText : status === 'CANCELLED' ? styles.statusCancelledText : status === 'IN_ROUTE' ? styles.statusInRouteText : styles.statusPendingText; return <TouchableOpacity key={status} style={[styles.historyStatusChip, selected && chipStyle]} onPress={() => setHistoryStatus(selected ? null : status)}><Text style={[styles.historyStatusText, selected && labelStyle]}>{statusCopy[status]}</Text></TouchableOpacity>; })}</ScrollView></View>
           {loadingOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageHistoryOrders.length ? pageHistoryOrders.map(renderOrder) : <View style={styles.emptyCard}><Ionicons name="file-tray-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{orders.length ? 'Sin coincidencias' : 'Todavía no hay pedidos'}</Text><Text style={styles.emptyText}>{orders.length ? 'Probá cambiando los filtros del historial.' : 'Cuando registres uno, aparecerá acá.'}</Text></View>}
@@ -846,7 +886,7 @@ export default function OrdersScreen() {
           </View>
 
           <View style={styles.section}>
-            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Entrega y camión</Text><Text style={styles.sectionHint}>Asigná el pedido a un camión y a su chofer</Text></View><TouchableOpacity onPress={() => void loadTrucks()} disabled={loadingTrucks} accessibilityLabel="Actualizar camiones"><Ionicons name="refresh-outline" size={18} color={colors.primary} /></TouchableOpacity></View>
+            <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Fecha de entrega</Text><Text style={styles.sectionHint}>Indicá cuándo debe entregarse el pedido</Text></View></View>
             <Text style={styles.dateLabel}>Fecha de entrega</Text>
             <TouchableOpacity style={styles.datePickerButton} onPress={() => { const date = new Date(`${deliveryDate}T00:00:00`); setCalendarMonth(Number.isNaN(date.getTime()) ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(date.getFullYear(), date.getMonth(), 1)); setCalendarOpen(true); }} disabled={submitting}><Ionicons name="calendar-outline" size={19} color={colors.primary} /><Text style={styles.datePickerValue}>{formatDate(deliveryDate)}</Text><Text style={styles.datePickerHint}>Seleccionar</Text><Ionicons name="chevron-down" size={18} color={colors.primary} /></TouchableOpacity>
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
@@ -857,6 +897,7 @@ export default function OrdersScreen() {
                 <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
               </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
+            </>}
           </View>
 
           <View style={styles.footer}>
@@ -939,7 +980,7 @@ export default function OrdersScreen() {
               </View>}
               <View style={styles.detailTotalRow}><Text style={styles.detailTotalLabel}>Total informado</Text><Text style={styles.detailTotalAmount}>{money(detailOrder?.total ?? 0)}</Text></View>
             </ScrollView> : null}
-            {detail && detailOrder?.status === 'PENDING' && !isDriver && <View style={styles.detailFooter}>
+            {detail && detailOrder?.status === 'PENDING' && isAdmin && <View style={styles.detailFooter}>
               {editingDetail ? <>
                 <TouchableOpacity style={styles.confirmBack} onPress={() => { setEditingDetail(false); setDetailError(null); }} disabled={savingEdit}><Text style={styles.confirmBackText}>Cancelar</Text></TouchableOpacity>
                 <TouchableOpacity style={styles.deliveryConfirmButton} onPress={() => void saveOrderEdit()} disabled={savingEdit}>{savingEdit ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.deliveryConfirmText}>Guardar cambios</Text>}</TouchableOpacity>
@@ -959,21 +1000,21 @@ export default function OrdersScreen() {
             <View style={styles.deliveryHeader}>
               <View style={styles.assignmentModalIcon}><Ionicons name="checkmark-done-outline" size={22} color={colors.primary} /></View>
               <View style={styles.assignmentModalTitleWrap}>
-                <Text style={styles.assignmentModalTitle}>{deliveryAlreadyMarked ? 'Entrega registrada' : 'Confirmar entrega'}</Text>
+                <Text style={styles.assignmentModalTitle}>Confirmar entrega</Text>
                 <Text style={styles.assignmentModalHint}>{deliveryOrder?.code} · {deliveryOrder?.customerName}</Text>
               </View>
               <TouchableOpacity onPress={closeDeliveryConfirmation} disabled={deliverySubmitting} accessibilityLabel="Cerrar entrega"><Ionicons name="close" size={22} color={colors.textSecondary} /></TouchableOpacity>
             </View>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.deliveryBody}>
               <View style={styles.deliveryTotalRow}><Text style={styles.deliveryTotalLabel}>Total del pedido</Text><Text style={styles.deliveryTotalValue}>{money(deliveryOrder?.total ?? 0)}</Text></View>
-              <Text style={styles.deliveryPrompt}>{deliveryAlreadyMarked ? 'La entrega se guardó. Reintentá únicamente el pago pendiente.' : '¿Cómo se resolvió el pago de este pedido?'}</Text>
+              <Text style={styles.deliveryPrompt}>{deliveryStatusUnknown ? 'Antes de reintentar, se verificará el estado actual del pedido.' : '¿Cómo se resolvió el pago de este pedido?'}</Text>
               {([
                 ['full', 'Pagó completo', `Registrar ${money(deliveryOrder?.total ?? 0)} como pago`],
                 ['account', 'Cuenta corriente', 'Dejar el total pendiente en la cuenta del cliente'],
                 ['partial', 'Pago parcial', 'Registrar un importe y dejar el saldo pendiente'],
               ] as [DeliveryPaymentChoice, string, string][]).map(([choice, title, subtitle]) => {
                 const selected = deliveryChoice === choice;
-                return <TouchableOpacity key={choice} style={[styles.deliveryChoice, selected && styles.deliveryChoiceSelected, deliveryAlreadyMarked && styles.deliveryChoiceDisabled]} onPress={() => { setDeliveryChoice(choice); setDeliveryError(null); }} disabled={deliverySubmitting || deliveryAlreadyMarked} accessibilityRole="radio" accessibilityState={{ selected }}>
+                return <TouchableOpacity key={choice} style={[styles.deliveryChoice, selected && styles.deliveryChoiceSelected]} onPress={() => { setDeliveryChoice(choice); setDeliveryPaymentMethod(null); setDeliveryAmount(''); setMixedCashAmount(''); setMixedTransferAmount(''); setDeliveryError(null); }} disabled={deliverySubmitting} accessibilityRole="radio" accessibilityState={{ selected }}>
                   <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color={selected ? colors.primary : colors.textSecondary} />
                   <View style={styles.deliveryChoiceCopy}><Text style={styles.deliveryChoiceTitle}>{title}</Text><Text style={styles.deliveryChoiceSubtitle}>{subtitle}</Text></View>
                 </TouchableOpacity>;
@@ -989,7 +1030,7 @@ export default function OrdersScreen() {
               <View style={styles.deliveryActions}>
                 <TouchableOpacity style={styles.deliveryCancelButton} onPress={closeDeliveryConfirmation} disabled={deliverySubmitting}><Text style={styles.deliveryCancelText}>Volver</Text></TouchableOpacity>
                 <TouchableOpacity style={[styles.deliveryConfirmButton, (!deliveryChoice || deliverySubmitting) && styles.deliveryConfirmDisabled]} onPress={() => void confirmDelivery()} disabled={!deliveryChoice || deliverySubmitting}>
-                  {deliverySubmitting ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.deliveryConfirmText}>{deliveryAlreadyMarked ? 'Reintentar pago' : 'Confirmar entrega'}</Text>}
+                  {deliverySubmitting ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.deliveryConfirmText}>{deliveryStatusUnknown ? 'Verificar y reintentar' : 'Confirmar entrega'}</Text>}
                 </TouchableOpacity>
               </View>
             </ScrollView>

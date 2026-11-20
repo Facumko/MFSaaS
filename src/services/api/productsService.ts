@@ -24,7 +24,7 @@ export interface ProductWriteRequest {
   description?: string;
   sku?: string;
   unitPrice: number;
-  unit?: string;
+  unit: string;
   categoryId?: number | null;
 }
 
@@ -75,14 +75,22 @@ function toIProduct(dto: ProductDto, categories: ICategory[] = []): IProduct {
 }
 
 export const productsService = {
-  /** GET /products */
+  /** GET /products supports active and categoryId; multi-category filters stay local. */
   async getProducts(
     search = "",
     categoryIds: string[] = [],
     categories: ICategory[] = [],
     active?: boolean,
   ): Promise<{ items: IProduct[]; total: number }> {
-    const response = await client.get<unknown>("/products", { params: active === undefined ? undefined : { active } });
+    const categoryId = categoryIds.length === 1 && /^\d+$/.test(categoryIds[0])
+      ? Number(categoryIds[0])
+      : undefined;
+    const response = await client.get<unknown>("/products", {
+      params: {
+        ...(active == null ? {} : { active }),
+        ...(categoryId == null ? {} : { categoryId }),
+      },
+    });
     let products = unwrapList(response.data);
     if (active === true)
       products = products.filter((product) => product.active !== false);
@@ -127,7 +135,6 @@ export const productsService = {
   },
 
   async deactivateProduct(id: string): Promise<void> {
-    // The backend maps DELETE to a soft deactivation in ProductService.
     await client.delete("/products/" + id);
   },
 

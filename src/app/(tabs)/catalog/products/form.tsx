@@ -36,7 +36,9 @@ export default function ProductFormScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { canManageProducts } = usePermissions();
-  useEffect(() => { if (!canManageProducts) router.replace('/(tabs)/catalog' as any); }, [canManageProducts, router]);
+  useEffect(() => {
+    if (!canManageProducts) router.replace("/(tabs)/catalog" as any);
+  }, [canManageProducts, router]);
   const params = useLocalSearchParams<{ productId?: string }>();
   const productId = Array.isArray(params.productId)
     ? params.productId[0]
@@ -183,6 +185,14 @@ export default function ProductFormScreen() {
     unitOptions.find((option) => option.value === unit)?.label ?? unit
   ).toLowerCase();
 
+  const categoryOptions = [
+    { value: "", label: "Sin categoría" },
+    ...categories.map((category) => ({
+      value: category.id,
+      label: category.name,
+    })),
+  ];
+
   const submit = async () => {
     setAttempted(true);
     const parsedPrice = Number(price.replace(/\D/g, ""));
@@ -302,28 +312,13 @@ export default function ProductFormScreen() {
         )}
 
         <Text style={styles.label}>Se vende por</Text>
-        <View style={styles.chips}>
-          {unitOptions.map((option) => (
-            <TouchableOpacity
-              key={option.value}
-              style={[
-                styles.chip,
-                unit === option.value && styles.chipSelected,
-              ]}
-              onPress={() => setUnit(option.value)}
-              disabled={submitting}
-            >
-              <Text
-                style={[
-                  styles.chipText,
-                  unit === option.value && styles.chipTextSelected,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <SelectField
+          options={unitOptions}
+          value={unit}
+          onChange={setUnit}
+          placeholder="Elegí una unidad"
+          disabled={submitting}
+        />
 
         <Text style={styles.label}>Precio por {unitLabel} *</Text>
         <TextInput

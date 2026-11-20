@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SelectField } from '../../../../components/ui/SelectField';
 import { FormErrorBanner } from '../../../../components/ui/FormErrorBanner';
 import { PaginationControls, pageItems } from '../../../../components/ui/PaginationControls';
 import { catalogService } from '../../../../services/api/catalogService';

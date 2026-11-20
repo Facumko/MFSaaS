@@ -33,9 +33,11 @@ const normalize = (text: string) =>
 export default function ProductManagementScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { canManageProducts, canViewCatalog } = usePermissions();
-  useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
-  const { categories } = useCategories(canViewCatalog);
+  const { canManageProducts } = usePermissions();
+  useEffect(() => {
+    if (!canManageProducts) router.replace("/(tabs)/catalog" as any);
+  }, [canManageProducts, router]);
+  const { categories } = useCategories(canManageProducts);
   const [products, setProducts] = useState<IProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,35 +107,6 @@ export default function ProductManagementScreen() {
         setToggleError(errorMessage);
       } finally { setBusyId(null); }
     })();
-  };
-
-  const deleteProduct = (product: IProduct) => {
-    Alert.alert(
-      "Eliminar producto",
-      '¿Eliminar "' + product.name + '"? Esta acción no se puede deshacer.',
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Eliminar",
-          style: "destructive",
-          onPress: async () => {
-            setBusyId(product.id);
-            try {
-              await productsService.deleteProduct(product.id);
-              await loadProducts();
-            } catch (err: any) {
-              Alert.alert(
-                "Error",
-                err?.response?.data?.message ||
-                  "No se pudo eliminar el producto.",
-              );
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ],
-    );
   };
 
   const renderItem = ({ item }: { item: IProduct }) => (
@@ -277,7 +250,7 @@ export default function ProductManagementScreen() {
         onPress={() => router.push("/(tabs)/catalog/products/form" as any)}
       >
         <Ionicons name="add" size={25} color={colors.textInverse} />
-      </TouchableOpacity>}
+      </TouchableOpacity>
     </View>
   );
 }

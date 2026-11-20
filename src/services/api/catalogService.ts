@@ -1,7 +1,9 @@
 /**
  * catalogService.ts
  * Conectado al backend real (category-controller).
- * Rutas alineadas al contrato OpenAPI: /categories y /categories/{id}.
+ * Endpoints disponibles: /categories, /categories/{id}, /categories/{id}/activate.
+ *
+ * La OpenAPI actual documenta los IDs como parámetros de path.
  */
 import { ICategory } from '../../types';
 import { client } from './client';
@@ -42,9 +44,7 @@ export const catalogService = {
     return response.data.map(toICategory);
   },
 
-  /**
-   * GET /categories/{id}
-   */
+  /** GET /categories/{id} */
   async getCategoryById(id: string): Promise<ICategory> {
     const response = await client.get<CategoryDto>(`/categories/${id}`);
     return toICategory(response.data);
@@ -56,26 +56,24 @@ export const catalogService = {
     return toICategory(response.data);
   },
 
-  /**
-   * PUT /categories/{id}
-   */
+  /** PUT /categories/{id} */
   async updateCategory(id: string, dto: Partial<ICategory>): Promise<ICategory> {
     const response = await client.put<CategoryDto>(`/categories/${id}`, toCategoryRequest(dto));
     return toICategory(response.data);
   },
 
-  /** DELETE /categories/{id} */
+  /** DELETE /categories/{id} — baja lógica según el backend. */
   async deleteCategory(id: string): Promise<void> {
     await client.delete(`/categories/${id}`);
   },
 
+  /** DELETE /categories/{id} — baja lógica según el backend. */
   async deactivateCategory(id: string): Promise<void> {
-    // The backend maps DELETE to a soft deactivation in CategoryService.
     await client.delete(`/categories/${id}`);
   },
 
+  /** PATCH /categories/{id}/activate — reactiva una categoría dada de baja lógica. */
   async activateCategory(id: string): Promise<void> {
-    const category = await this.getCategoryById(id);
-    await this.updateCategory(id, { ...category, active: true });
+    await client.patch(`/categories/${id}/activate`);
   },
 };

@@ -43,6 +43,7 @@ export const ROLE_LABEL: Record<string, string> = {
   manager: "Encargado",
   seller: "Vendedor",
   delivery: "Repartidor",
+  depot: "Depósito",
 };
 
 // Permissions usados en usePermissions hook

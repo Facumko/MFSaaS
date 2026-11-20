@@ -1,12 +1,10 @@
 /**
  * clientsService.ts
  * Conectado al backend real (customer-controller).
- * Endpoints disponibles: /customer/get, /customer/get/{id}, /customer/save,
- * /customer/update/{id}, /customer/delete/{id}, /customer/desactivate/{id},
- * /customer/activate/{id}
+ * Endpoints disponibles: /customers, /customers/{id}, /customers/{id}/activate.
  *
- * El backend expone direcciones en /customers/{customerId}/addresses.
- * Deuda, historial y pagos se completarán contra los endpoints de ledger/orders.
+ * Direcciones, cuenta corriente, pagos e historial usan sus controladores
+ * específicos documentados en la OpenAPI actual.
  */
 import { IClient, IClientDetail, IDebtor, IOrder, IPayment } from '../../types';
 import { client } from './client';
@@ -139,11 +137,12 @@ export const clientsService = {
   },
 
   /**
-   * GET /customers
-   * Filtra y pagina en el cliente hasta que el backend exponga esos parámetros.
+   * GET /customers?active={active}; search y paginación se aplican localmente.
    */
-  async getClients(search = '', page = 1): Promise<{ items: IClient[]; total: number }> {
-    const response = await client.get<CustomerDto[]>('/customers', { params: { active: true } });
+  async getClients(search = '', page = 1, active?: boolean): Promise<{ items: IClient[]; total: number }> {
+    const response = await client.get<CustomerDto[]>('/customers', {
+      params: active == null ? undefined : { active },
+    });
     let items = response.data.map(toIClient);
 
     if (search) {
@@ -159,7 +158,7 @@ export const clientsService = {
     return { items: items.slice(start, start + pageSize), total };
   },
 
-  /** GET /customer/get/{id} */
+  /** GET /customers/{id} */
   async getClientById(id: string): Promise<IClient> {
     const response = await client.get<CustomerDto>(`/customers/${id}`);
     const customer = toIClient(response.data);
@@ -168,8 +167,7 @@ export const clientsService = {
   },
 
   /**
-   * TODO: backend no tiene endpoint de detalle con historial todavía.
-   * Por ahora arma el detalle con lo básico + historial vacío.
+   * Compone la ficha del cliente con cuenta corriente e historial de pedidos.
    */
   async getClientDetail(id: string): Promise<IClientDetail> {
     const base = await this.getClientById(id);
@@ -221,22 +219,38 @@ export const clientsService = {
   },
 
   async getDebtors(): Promise<{ items: IDebtor[] }> {
-    const response = await client.get<CustomerDto[]>('/customers', { params: { active: true } });
+    const response = await client.get<CustomerDto[]>('/customers');
     const customers = response.data.map(toIClient);
-    const items: Array<IDebtor | null> = await Promise.all(customers.map(async (customer): Promise<IDebtor | null> => {
-      const ledger = await ledgerService.getCustomerLedger(customer.id).catch(() => null);
-      const balance = ledger?.balance;
-      if (balance == null || balance <= 0) return null;
-      return {
-        client: { id: customer.id, businessName: customer.businessName, taxId: customer.taxId, phone: customer.phone },
+    const results = await Promise.all(customers.map(async customer => {
+      try {
+        const ledger = await ledgerService.getCustomerLedger(customer.id);
+        if (ledger.balance == null || !Number.isFinite(ledger.balance)) {
+          return { customer, error: `GET /api/customers/${customer.id}/ledger respondió ${ledger.entries.length} movimientos, pero no se encontró balance ni runningBalance` as const };
+        }
+        return { customer, ledger, error: null };
+      } catch {
+        return { customer, error: 'no se pudo consultar su cuenta corriente' as const };
+      }
+    }));
+    const failures = results.filter(result => result.error !== null);
+    if (failures.length) {
+      const first = failures[0];
+      throw new Error(`No se pudo determinar la deuda de ${first.customer.businessName}: ${first.error}.`);
+    }
+
+    const items = results.flatMap(result => {
+      const balance = result.ledger!.balance!;
+      if (balance <= 0) return [];
+      return [{
+        client: { id: result.customer.id, businessName: result.customer.businessName, taxId: result.customer.taxId, phone: result.customer.phone },
         totalDebt: balance,
         overdueOrders: [], // No hay endpoint documentado para detallar los pedidos pendientes.
-      };
-    }));
-    return { items: items.filter((item): item is IDebtor => item !== null) };
+      }];
+    });
+    return { items };
   },
 
-  /** POST /customer/save */
+  /** POST /customers */
   async createClient(dto: Omit<IClient, 'id'>): Promise<IClient> {
     const body = {
       ...toCustomerDto(dto),
@@ -250,7 +264,7 @@ export const clientsService = {
     return created;
   },
 
-  /** PUT /customer/update/{id} */
+  /** PUT /customers/{id} */
   async updateClient(id: string, dto: Partial<IClient>): Promise<IClient> {
     const response = await client.put<CustomerDto>(`/customers/${id}`, toCustomerDto(dto));
     if (dto.addresses) {
@@ -277,20 +291,18 @@ export const clientsService = {
     return customer;
   },
 
-  /** DELETE /customer/delete/{id} — baja definitiva */
+  /** DELETE /customers/{id} — baja lógica según el backend. */
   async deleteClient(id: string): Promise<void> {
     await client.delete(`/customers/${id}`);
   },
 
-  /** PATCH /customer/desactivate/{id} — baja lógica (soft delete) */
+  /** DELETE /customers/{id} — baja lógica según el backend. */
   async deactivateClient(id: string): Promise<void> {
-    await client.patch(`/customer/desactivate/${id}`);
+    await client.delete(`/customers/${id}`);
   },
 
   /**
-   * PATCH /customer/activate/{id} — reactiva un cliente dado de baja lógica.
-   * NOTA: verificar el nombre exacto de la ruta contra /v3/api-docs; se asumió
-   * el mismo patrón que /customer/desactivate/{id}.
+   * PATCH /customers/{id}/activate — reactiva un cliente dado de baja lógica.
    */
   async activateClient(id: string): Promise<void> {
     await client.patch(`/customers/${id}/activate`);

@@ -25,9 +25,9 @@ import { ICategory } from '../../../../types';
 export default function CategoriesListScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { canManageCategories, canManageCategoryStatus } = usePermissions();
-  useEffect(() => { if (!canManageCategories) router.replace('/(tabs)/catalog' as any); }, [canManageCategories, router]);
-  const { categories, loading, error, refetch, search, setSearch } = useCategories(canManageCategories);
+  const { canViewCategories, canManageCategories, canManageCategoryStatus } = usePermissions();
+  useEffect(() => { if (!canViewCategories) router.replace('/(tabs)/catalog' as any); }, [canViewCategories, router]);
+  const { categories, loading, error, refetch, search, setSearch } = useCategories(canViewCategories);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -65,36 +65,10 @@ export default function CategoriesListScreen() {
     })();
   };
 
-  const handleDelete = (category: ICategory) => {
-    Alert.alert(
-      'Eliminar categoría',
-      `Esta acción no se puede deshacer. ¿Eliminar "${category.name}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setBusyId(category.id);
-              await catalogService.deleteCategory(category.id);
-              await refetch();
-            } catch (err) {
-              Alert.alert('Error', 'No se pudo eliminar la categoría');
-            } finally {
-              setBusyId(null);
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const handleLongPress = (category: ICategory) => {
     Alert.alert(category.name, 'Elegí una acción', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Editar', onPress: () => handleEdit(category) },
-      ...(canManageCategoryStatus ? [{ text: 'Eliminar', style: 'destructive' as const, onPress: () => handleDelete(category) }] : []),
     ]);
   };
 
@@ -104,8 +78,8 @@ export default function CategoriesListScreen() {
       <CategoryCard
         category={item}
         parentName={parentNameOf(item)}
-        onPress={() => !isBusy && handleEdit(item)}
-        onLongPress={() => canManageCategoryStatus && !isBusy && handleLongPress(item)}
+        onPress={() => canManageCategories && !isBusy && handleEdit(item)}
+        onLongPress={() => canManageCategories && !isBusy && handleLongPress(item)}
         onToggleActive={canManageCategoryStatus ? () => handleToggleActive(item) : undefined}
         togglingActive={isBusy}
       />
@@ -204,13 +178,13 @@ export default function CategoriesListScreen() {
       <PaginationControls page={page} totalItems={categories.length} onPageChange={setPage} />
 
       {/* FAB - Create Category */}
-      <TouchableOpacity
+      {canManageCategories && <TouchableOpacity
         style={[styles.fab, { bottom: insets.bottom + spacing.lg }]}
         onPress={handleCreate}
         activeOpacity={0.8}
       >
         <Ionicons name="add" size={24} color={colors.textInverse} />
-      </TouchableOpacity>
+      </TouchableOpacity>}
     </View>
   );
 }

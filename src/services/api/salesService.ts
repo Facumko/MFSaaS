@@ -2,7 +2,8 @@ import { client } from './client';
 
 export type ApiOrderStatus = 'PENDING' | 'IN_ROUTE' | 'DELIVERED' | 'CANCELLED';
 export type DeliveryPaymentMethod = 'CASH' | 'TRANSFER' | 'MIXED' | 'CURRENT_ACCOUNT';
-export interface DeliveryPaymentRequest {
+
+export interface OrderDeliveryRequest {
   paymentMethod: DeliveryPaymentMethod;
   cashAmount?: number;
   transferAmount?: number;
@@ -116,14 +117,12 @@ export const salesService = {
   },
 
   async getOrdersByTruck(truckId: number): Promise<OrderListItem[]> {
-    const requested = await this.getOrders({ truckId });
-    const orders = requested.length ? requested : await this.getOrders();
-    const detailed = await Promise.all(orders.map(async order => {
-      if (!order.id || (order.items?.length && order.truckId)) return order;
-      try {
-        const detail = toOrderListItem(await this.getOrder(order.id));
-        return { ...order, truckId: detail.truckId ?? order.truckId, items: detail.items?.length ? detail.items : order.items };
-      } catch { return order; }
+    const response = await client.get<unknown>(`/trucks/${truckId}/orders`);
+    const orders = unwrapList(response.data).map(toOrderListItem);
+    return Promise.all(orders.map(async order => {
+      if (order.items?.length || !order.id) return order;
+      try { return toOrderListItem(await this.getOrder(order.id)); }
+      catch { return order; }
     }));
     return detailed.filter(order => order.truckId === String(truckId));
   },
@@ -172,8 +171,8 @@ export const salesService = {
     await client.patch(`/orders/${id}/in-route`);
   },
 
-  async markDelivered(id: string, payment: DeliveryPaymentRequest): Promise<void> {
-    await client.patch(`/orders/${id}/delivered`, payment);
+  async markDelivered(id: string, payload: OrderDeliveryRequest): Promise<void> {
+    await client.patch(`/orders/${id}/delivered`, payload);
   },
 
   async cancelOrder(id: string): Promise<void> {

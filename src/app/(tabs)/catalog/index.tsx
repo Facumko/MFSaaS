@@ -14,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SelectField } from "../../../components/ui/SelectField";
 import { useCategories } from "../../../hooks";
 import { usePermissions } from "../../../hooks/usePermissions";
 import { productsService } from "../../../services/api/productsService";
@@ -28,7 +29,7 @@ export default function CatalogScreen() {
   const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
   useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
-  // Categorías: conectadas al backend real (endpoint /category/get).
+  // Categorías: conectadas al backend real (endpoint /categories).
   // Se muestra el error real (en vez de confundirlo con "no hay categorías")
   // para poder reintentar sin perder el resto del filtro.
   const {
@@ -131,14 +132,14 @@ export default function CatalogScreen() {
         {returnToOrders && <TouchableOpacity style={styles.catalogBackButton} onPress={() => router.replace('/(tabs)/orders' as any)} accessibilityLabel="Volver a pedidos"><Ionicons name="chevron-back" size={22} color={colors.textPrimary} /><Text style={styles.catalogBackText}>Pedidos</Text></TouchableOpacity>}
         <Text style={styles.catalogHeaderTitle}>Catálogo</Text>
         <View style={styles.headerActions}>
-          <TouchableOpacity
+          {canManageProducts && <TouchableOpacity
             style={styles.manageProductsButton}
             onPress={() => router.push("/(tabs)/catalog/products" as any)}
           >
             <Ionicons name="cube-outline" size={17} color={colors.primary} />
             <Text style={styles.manageCategoriesText}>Productos</Text>
-          </TouchableOpacity>
-          {canManageCategories && <TouchableOpacity
+          </TouchableOpacity>}
+          {canViewCategories && <TouchableOpacity
             style={styles.manageCategoriesButton}
             onPress={() => router.push("/(tabs)/catalog/categories" as any)}
           >
@@ -388,7 +389,7 @@ const styles = StyleSheet.create({
   },
   filterBar: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     backgroundColor: colors.surface,
@@ -421,6 +422,7 @@ const styles = StyleSheet.create({
   selectorDoneText: { ...typography.label, color: colors.textInverse, fontWeight: "700" },
   clearLink: {
     paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.md,
   },
   clearLinkText: {
     color: colors.error,
