@@ -50,7 +50,15 @@ export default function EditProfileScreen() {
       router.back();
     } catch (saveError) {
       const parsed = parseApiError(saveError, 'No se pudieron guardar los cambios.');
-      setFieldErrors(current => ({ ...current, ...parsed.fields }));
+      const normalizedFields = { ...parsed.fields };
+      if (normalizedFields.email && !normalizedFields.username) {
+        normalizedFields.username = normalizedFields.email;
+        delete normalizedFields.email;
+      }
+      if (/email.*(already|exist)|correo.*(ya existe|registrado)/i.test(parsed.message)) {
+        normalizedFields.username = 'Ya existe una cuenta con ese correo.';
+      }
+      setFieldErrors(current => ({ ...current, ...normalizedFields }));
     }
   }
 

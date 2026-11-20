@@ -100,23 +100,6 @@ export const logisticsService = {
     await client.delete(`/trucks/${id}`);
   },
 
-  async getTruckStock(truckId: string, date?: string): Promise<TruckStockRecord[]> {
-    const response = await client.get<unknown>(`/trucks/${truckId}/stock`, {
-      params: date ? { date } : undefined,
-    });
-    return unwrapList(response.data, ['items', 'content', 'data', 'stock']).map(item => toTruckStock(item, truckId));
-  },
-
-  async loadTruckProduct(truckId: string, payload: TruckStockLoadRequest): Promise<TruckStockRecord> {
-    const response = await client.post<unknown>(`/trucks/${truckId}/stock`, payload);
-    return toTruckStock(unwrapOne(response.data), truckId);
-  },
-
-  async updateTruckStock(truckId: string, stockId: string, payload: TruckStockUpdateRequest): Promise<TruckStockRecord> {
-    const response = await client.put<unknown>(`/trucks/${truckId}/stock/${stockId}`, payload);
-    return toTruckStock(unwrapOne(response.data), truckId);
-  },
-
   async deleteTruck(id: string): Promise<void> {
     await client.delete(`/trucks/${id}`);
   },
@@ -136,4 +119,5 @@ export const logisticsService = {
   async deleteStock(truckId: string, stockId: string): Promise<void> {
     await client.delete(`/trucks/${truckId}/stock/${stockId}`);
   },
+
 };

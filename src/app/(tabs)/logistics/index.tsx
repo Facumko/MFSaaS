@@ -66,7 +66,7 @@ export default function LogisticsScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [truckOrdersError, setTruckOrdersError] = useState<string | null>(null);
-  const [truckStock, setTruckStock] = useState<TruckStockRecord[]>([]);
+  const [truckStock, setTruckStock] = useState<TruckStockItem[]>([]);
   const [stockProducts, setStockProducts] = useState<{ id: string; name: string; unit: string }[]>([]);
   const [selectedStockProductId, setSelectedStockProductId] = useState<string | null>(null);
   const [stockQuantity, setStockQuantity] = useState('');
@@ -130,7 +130,7 @@ export default function LogisticsScreen() {
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmployees(true);
-    try { setEmployees((await usersService.getUsers()).filter(user => user.active && /repartidor|delivery/i.test(user.roleName))); setEmployeePage(1); }
+    try { setEmployees((await usersService.getUsers()).filter(user => user.active && isDeliveryRole(user.roleName, user.roleId))); setEmployeePage(1); }
     catch { setEmployees([]); }
     finally { setLoadingEmployees(false); }
   }, []);
@@ -195,6 +195,18 @@ export default function LogisticsScreen() {
     setDriverId(truck?.driverId ?? '');
     setError(null);
     setTruckModal(true);
+  };
+
+  const toggleTruck = async (truck: Truck) => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (truck.active) await logisticsService.deactivateTruck(truck.id);
+      else await logisticsService.activateTruck(truck.id);
+      await loadTrucks();
+    } catch (err) {
+      setError(parseApiError(err, `No se pudo ${truck.active ? 'desactivar' : 'activar'} el camión.`).message);
+    } finally { setSaving(false); }
   };
 
   const saveTruck = async () => {
@@ -419,6 +431,24 @@ export default function LogisticsScreen() {
         </View></View>
       </Modal>
 
+      <Modal visible={!!driverAssignmentTruck} transparent animationType="fade" onRequestClose={() => !saving && setDriverAssignmentTruck(null)}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Chofer de {driverAssignmentTruck?.licensePlate}</Text>
+          <Text style={styles.modalDescription}>Elegí el chofer activo que va a quedar asignado a este camión.</Text>
+          {!!error && <Text style={styles.modalError}>{error}</Text>}
+          {loadingEmployees ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : employees.length ? <>
+            <TouchableOpacity style={styles.employeeChoice} onPress={() => void saveDriverAssignment(null)} disabled={saving}><Text style={styles.employeeChoiceText}>Quitar asignación</Text></TouchableOpacity>
+            <ScrollView style={styles.employeePicker} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+              {pageEmployees.map(employee => <TouchableOpacity key={employee.id} style={[styles.employeeChoice, employee.id === driverAssignmentTruck?.driverId && styles.employeeChoiceSelected]} onPress={() => void saveDriverAssignment(employee.id)} disabled={saving}>
+                <Text style={[styles.employeeChoiceText, employee.id === driverAssignmentTruck?.driverId && styles.employeeChoiceTextSelected]}>{employee.fullName || employee.email}</Text>
+                <Text style={styles.employeeRole}>{employee.email}{employee.roleName ? ` · ${employee.roleName}` : ''}</Text>
+              </TouchableOpacity>)}
+            </ScrollView><PaginationControls page={employeePage} totalItems={employees.length} onPageChange={setEmployeePage} />
+          </> : <View><Text style={styles.modalDescription}>No hay choferes activos disponibles.</Text><TouchableOpacity onPress={() => void loadEmployees()}><Text style={styles.refreshText}>Reintentar carga de usuarios</Text></TouchableOpacity></View>}
+          <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setDriverAssignmentTruck(null)} disabled={saving}><Text style={styles.secondaryButtonText}>Cerrar</Text></TouchableOpacity></View>
+        </View></View>
+      </Modal>
+
       <Modal visible={truckModal} transparent animationType="fade" onRequestClose={() => setTruckModal(false)}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard}>
           <Text style={styles.modalTitle}>{editingTruck ? 'Editar camión' : 'Nuevo camión'}</Text>
@@ -435,7 +465,7 @@ export default function LogisticsScreen() {
       <Modal visible={addStockModal} transparent animationType="fade" onRequestClose={() => setAddStockModal(false)}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard}>
           <Text style={styles.modalTitle}>Cargar producto</Text>{!!error && <Text style={styles.modalError}>{error}</Text>}<Text style={styles.modalDescription}>Camión {selectedTruck?.licensePlate}</Text>
-          <Text style={styles.inputLabel}>Fecha de reparto</Text><TouchableOpacity style={styles.input} onPress={() => setStockDatePickerOpen(true)} disabled={saving}><Text style={styles.inputText}>{formatDate(stockDate)}</Text></TouchableOpacity>
+          <Text style={styles.inputLabel}>Fecha de reparto</Text><TouchableOpacity style={styles.inputButton} onPress={() => setStockDatePickerOpen(true)} disabled={saving}><Text style={styles.inputText}>{formatDate(stockDate)}</Text></TouchableOpacity>
           <Text style={styles.inputLabel}>Producto</Text>{loadingProducts ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <><ScrollView style={styles.productPicker} nestedScrollEnabled>{pageProducts.map(product => <TouchableOpacity key={product.id} style={[styles.productChoice, selectedProductId === product.id && styles.productChoiceSelected]} onPress={() => setSelectedProductId(product.id)}><Text style={[styles.productChoiceText, selectedProductId === product.id && styles.productChoiceTextSelected]}>{product.name}</Text><Text style={styles.productUnit}>{product.unit}</Text></TouchableOpacity>)}</ScrollView><PaginationControls page={productPage} totalItems={products.length} onPageChange={setProductPage} /></>}
           <Text style={styles.inputLabel}>Cantidad</Text><TextInput value={quantityToLoad} onChangeText={setQuantityToLoad} style={styles.input} placeholder="0" keyboardType="number-pad" editable={!saving} />
           <View style={styles.modalActions}><TouchableOpacity style={styles.secondaryButton} onPress={() => setAddStockModal(false)} disabled={saving}><Text style={styles.secondaryButtonText}>Volver</Text></TouchableOpacity><TouchableOpacity style={styles.modalPrimaryButton} onPress={() => void addStock()} disabled={saving || loadingProducts}>{saving ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.modalPrimaryText}>Cargar</Text>}</TouchableOpacity></View>
@@ -556,6 +586,7 @@ const styles = StyleSheet.create({
   inputLabel: { ...typography.caption, color: colors.textSecondary, fontWeight: '700', marginBottom: spacing.xs, marginTop: spacing.sm },
   optional: { fontWeight: '400', color: colors.textDisabled },
   input: { ...typography.body, color: colors.textPrimary, backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  inputButton: { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   inputText: { ...typography.body, color: colors.textPrimary },
   employeePicker: { maxHeight: 180, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.sm, marginBottom: spacing.md },
   employeeChoice: { paddingVertical: spacing.sm, borderBottomWidth: 1, borderColor: colors.border },

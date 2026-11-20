@@ -62,6 +62,16 @@ export const ledgerService = {
       ?? entriesWithBalance[0]?.runningBalance
       // The ledger endpoint returns a list of movements; an empty list means no debt.
       ?? (entries.length === 0 ? 0 : null);
+    const calculatedBalance = balanceValue == null
+      ? entries.reduce((balance, entry) => {
+          const amount = Number(entry.amount ?? entry.value ?? 0);
+          if (!Number.isFinite(amount)) return balance;
+          const type = String(entry.type ?? entry.entryType ?? entry.operation ?? '').toUpperCase();
+          if (type === 'PAYMENT') return balance - Math.abs(amount);
+          if (type === 'CHARGE') return balance + Math.abs(amount);
+          return balance + amount;
+        }, 0)
+      : null;
     return {
       balance: balanceValue == null ? calculatedBalance : Number(balanceValue),
       entries: entries.map(toEntry),
@@ -70,6 +80,12 @@ export const ledgerService = {
 
   async registerPayment(customerId: string, amount: number, _paymentMethod?: LedgerPaymentMethod): Promise<void> {
     // LedgerEntryRequest only accepts `amount`; payment method is stored on delivered orders.
+    if (!/^\d+$/.test(customerId) || Number(customerId) < 1) {
+      throw new Error('No se pudo identificar al cliente para registrar el pago.');
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Ingresá un importe de pago mayor que cero.');
+    }
     await client.post(`/customers/${customerId}/ledger/payments`, { amount });
   },
 };

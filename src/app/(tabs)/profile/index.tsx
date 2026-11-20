@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { usePermissions } from '@/hooks/usePermissions';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Modal,
   Pressable,
@@ -16,7 +17,7 @@ import {
   View,
 } from 'react-native';
 
-const SUPPORT_EMAIL = 'soporte@tuempresa.com';
+const SUPPORT_EMAIL = 'desarrollomf.arg@gmail.com';
 
 export default function ProfileScreen() {
   const { user, logout } = useAuth();
@@ -31,8 +32,12 @@ export default function ProfileScreen() {
     setConfirmVisible(false);
   }
 
-  function handleContactSupport() {
-    Linking.openURL(`mailto:${SUPPORT_EMAIL}`);
+  async function handleContactSupport() {
+    try {
+      await Linking.openURL(`mailto:${SUPPORT_EMAIL}`);
+    } catch {
+      Alert.alert('Soporte', `No se pudo abrir la aplicación de correo. Podés escribir a ${SUPPORT_EMAIL}.`);
+    }
   }
 
   function handleEditProfile() {

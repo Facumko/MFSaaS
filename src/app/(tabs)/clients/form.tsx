@@ -134,21 +134,19 @@ export default function ClientFormScreen() {
       setServerError(null);
       clearErrors();
 
-      if (!isEditMode) {
-        let page = 1;
-        let result = await clientsService.getClients('', page);
-        const existingClients = [...result.items];
-        while (existingClients.length < result.total) {
-          page += 1;
-          result = await clientsService.getClients('', page);
-          if (!result.items.length) break;
-          existingClients.push(...result.items);
-        }
-        const taxIdDigits = data.taxId.replace(/\D/g, '');
-        if (existingClients.some(existing => existing.taxId.replace(/\D/g, '') === taxIdDigits)) {
-          setError('taxId', { type: 'validate', message: 'Ya existe un cliente con ese CUIT.' });
-          return;
-        }
+      let page = 1;
+      let result = await clientsService.getClients('', page);
+      const existingClients = [...result.items];
+      while (existingClients.length < result.total) {
+        page += 1;
+        result = await clientsService.getClients('', page);
+        if (!result.items.length) break;
+        existingClients.push(...result.items);
+      }
+      const taxIdDigits = data.taxId.replace(/\D/g, '');
+      if (existingClients.some(existing => existing.id !== clientId && existing.taxId.replace(/\D/g, '') === taxIdDigits)) {
+        setError('taxId', { type: 'validate', message: 'Ya existe un cliente con ese CUIT.' });
+        return;
       }
 
       const addresses: IAddress[] = data.addresses.map(address => ({
@@ -184,6 +182,11 @@ export default function ClientFormScreen() {
       goBack();
     } catch (err) {
       const parsed = parseApiError(err, 'No se pudo guardar el cliente. Revisá los datos e intentá de nuevo.');
+      if (/tax.?id.*(already|exist)|cuit.*(ya existe|duplicad)/i.test(parsed.message)) {
+        setError('taxId', { type: 'server', message: 'Ya existe un cliente con ese CUIT.' });
+        setServerError(null);
+        return;
+      }
       const backendFields = { ...parsed.fields, ...(parsed.fields.name ? { businessName: parsed.fields.name } : {}) };
       const knownFields = Object.fromEntries(Object.entries(backendFields).filter(([field]) =>
         ['businessName', 'taxId', 'phone', 'email'].includes(field),

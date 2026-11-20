@@ -119,7 +119,7 @@ export const salesService = {
   async getOrdersByTruck(truckId: number): Promise<OrderListItem[]> {
     const response = await client.get<unknown>(`/trucks/${truckId}/orders`);
     const orders = unwrapList(response.data).map(toOrderListItem);
-    return Promise.all(orders.map(async order => {
+    const detailed = await Promise.all(orders.map(async order => {
       if (order.items?.length || !order.id) return order;
       try { return toOrderListItem(await this.getOrder(order.id)); }
       catch { return order; }

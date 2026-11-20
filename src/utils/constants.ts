@@ -2,6 +2,7 @@
 // Axios combina este prefijo con las rutas de services/api.
 export const BASE_URL = "https://superadditional-septariate-olevia.ngrok-free.dev/api";
 //  "https://superadditional-septariate-olevia.ngrok-free.dev/api";
+// "http://192.168.1.25:8080/api"
 
 // Unidades de venta que se pueden elegir al crear/editar un producto.
 // `value` es lo que se envía al backend; `label` lo que ve el usuario.
