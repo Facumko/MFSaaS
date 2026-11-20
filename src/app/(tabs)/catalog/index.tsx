@@ -26,7 +26,7 @@ export default function CatalogScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ returnTo?: string }>();
   const returnToOrders = params.returnTo === 'orders';
-  const { canManageProducts, canManageCategories, canViewCatalog } = usePermissions();
+  const { canManageProducts, canManageCategories, canViewCategories, canViewCatalog } = usePermissions();
   useEffect(() => { if (!canViewCatalog) router.replace('/(tabs)/orders' as any); }, [canViewCatalog, router]);
 
   // Categorías: conectadas al backend real (endpoint /categories).

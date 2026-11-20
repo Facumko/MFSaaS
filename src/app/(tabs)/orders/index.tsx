@@ -58,7 +58,7 @@ export default function OrdersScreen() {
   const params = useLocalSearchParams<{ newClientId?: string }>();
   const newClientId = Array.isArray(params.newClientId) ? params.newClientId[0] : params.newClientId;
   const user = useAuthStore(state => state.user);
-  const { canAssignOrdersToTruck, canViewOrders, canManageClients } = usePermissions();
+  const { canAssignOrdersToTruck, canViewOrders, canManageClients, canRegisterSale } = usePermissions();
   const isDriver = user?.role === 'delivery';
   const { items, total, itemCount, updateQty, clearCart } = useCartStore();
   const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
@@ -897,7 +897,6 @@ export default function OrdersScreen() {
                 <Ionicons name="chevron-down" size={19} color={colors.textSecondary} />
               </TouchableOpacity>
             ) : <Text style={styles.emptyText}>No hay camiones activos. Podés enviar el pedido sin asignarlo.</Text>}
-            </>}
           </View>
 
           <View style={styles.footer}>

@@ -251,6 +251,7 @@ export default function ProductManagementScreen() {
       >
         <Ionicons name="add" size={25} color={colors.textInverse} />
       </TouchableOpacity>
+      }
     </View>
   );
 }

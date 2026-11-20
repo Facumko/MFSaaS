@@ -19,7 +19,6 @@ import { logisticsService, Truck, TruckStockItem } from '../../../services/api/l
 import { productsService } from '../../../services/api/productsService';
 import { ApiOrderStatus, OrderListItem, salesService } from '../../../services/api/salesService';
 import { ManagedUser, usersService } from '../../../services/api/usersService';
-import { productsService } from '../../../services/api/productsService';
 import { authService } from '../../../services/api/authService';
 import { SelectField } from '../../../components/ui/SelectField';
 import { useAuthStore } from '../../../store';
@@ -75,7 +74,6 @@ export default function LogisticsScreen() {
     const today = new Date();
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   });
-  const [loadingStock, setLoadingStock] = useState(false);
   const [savingStock, setSavingStock] = useState(false);
   const [stockError, setStockError] = useState<string | null>(null);
   const [truckModal, setTruckModal] = useState(false);
@@ -86,7 +84,6 @@ export default function LogisticsScreen() {
   const [addStockModal, setAddStockModal] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState('');
   const [quantityToLoad, setQuantityToLoad] = useState('');
-  const [stockDate, setStockDate] = useState(today());
   const [stockDatePickerOpen, setStockDatePickerOpen] = useState(false);
   const [editingStock, setEditingStock] = useState<TruckStockItem | null>(null);
   const [editLoaded, setEditLoaded] = useState('');
