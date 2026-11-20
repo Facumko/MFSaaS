@@ -60,6 +60,10 @@ export interface OrderListItem {
 }
 
 type RawOrder = Record<string, any>;
+const firstText = (...values: unknown[]) => {
+  const value = values.find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+  return value?.trim() || undefined;
+};
 
 function unwrapList(payload: unknown): RawOrder[] {
   if (Array.isArray(payload)) return payload as RawOrder[];
@@ -156,15 +160,16 @@ export const salesService = {
     const orders = unwrapList(response.data).map(toOrderListItem);
     const detailed = await Promise.all(orders.map(async order => {
       if (!order.id) return order;
+      let resolved = order;
       try {
         const detail = toOrderListItem(await this.getOrder(order.id));
-        return {
+        resolved = {
           ...order,
           customerName: detail.customerName !== 'Cliente' ? detail.customerName : order.customerName !== 'Cliente' ? order.customerName : 'Razón social no disponible',
           customerId: order.customerId ?? detail.customerId,
           deliveryAddress: detail.deliveryAddress ?? order.deliveryAddress,
-          customerEmail: detail.customerEmail ?? order.customerEmail,
-          customerPhone: detail.customerPhone ?? order.customerPhone,
+          customerEmail: firstText(detail.customerEmail, order.customerEmail),
+          customerPhone: firstText(detail.customerPhone, order.customerPhone),
           amountPaid: detail.amountPaid ?? order.amountPaid,
           cashAmount: detail.cashAmount ?? order.cashAmount,
           transferAmount: detail.transferAmount ?? order.transferAmount,
@@ -175,7 +180,19 @@ export const salesService = {
           truckId: order.truckId ?? detail.truckId,
         };
       }
-      catch { return order; }
+      catch { /* Conserva los datos del endpoint de camiones. */ }
+      if ((!resolved.customerEmail || !resolved.customerPhone) && resolved.customerId && /^\d+$/.test(resolved.customerId)) {
+        try {
+          const customer = unwrapOne((await client.get<unknown>(`/customers/${resolved.customerId}`)).data);
+          const contact = customer.contact ?? customer.contactInfo ?? {};
+          resolved = {
+            ...resolved,
+            customerEmail: firstText(resolved.customerEmail, customer.email, customer.mail, contact.email, contact.mail),
+            customerPhone: firstText(resolved.customerPhone, customer.phone, customer.phoneNumber, customer.mobile, customer.cellphone, contact.phone, contact.phoneNumber, contact.mobile, contact.cellphone),
+          };
+        } catch { /* El endpoint del pedido sigue siendo la fuente de contactos si clientes no es accesible. */ }
+      }
+      return resolved;
     }));
     // The truck-specific endpoint is authoritative; include orders whose detail
     // omits truckId, while excluding any explicit assignment to another truck.

@@ -162,7 +162,7 @@ export const clientsService = {
   async getClientById(id: string): Promise<IClient> {
     const response = await client.get<CustomerDto>(`/customers/${id}`);
     const customer = toIClient(response.data);
-    const addresses = response.data.addresses?.map(toIAddress) ?? await this.getClientAddresses(id);
+    const addresses = response.data.addresses?.map(toIAddress) ?? await this.getClientAddresses(id).catch(() => []);
     return { ...customer, addresses };
   },
 

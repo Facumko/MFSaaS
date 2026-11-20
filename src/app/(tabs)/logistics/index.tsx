@@ -41,6 +41,10 @@ const today = () => {
 
 const orderStatusLabel: Record<ApiOrderStatus, string> = { PENDING: 'Pendiente', IN_ROUTE: 'En reparto', DELIVERED: 'Entregado', CANCELLED: 'No entregado' };
 const money = (value: number) => `$${value.toLocaleString('es-AR')}`;
+const firstContactValue = (...values: unknown[]) => {
+  const value = values.find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+  return value?.trim() || undefined;
+};
 const latestAttemptForScheduledDate = (order: OrderListItem, attempts: DeliveryAttempt[] = []) => {
   const scheduledDate = (order.deliveryDate || today()).slice(0, 10);
   const matching = attempts
@@ -303,6 +307,14 @@ export default function LogisticsScreen() {
     setDriverOrderBusyId(order.id);
     setDriverOrderError(null);
     try {
+      // El repartidor puede reportar un intento fallido desde Pendiente. Si el
+      // endpoint requiere En reparto, avanzamos el estado antes del reporte.
+      if (order.status === 'PENDING') {
+        await salesService.markInRoute(order.id);
+        const inRouteOrder = { ...order, status: 'IN_ROUTE' as const };
+        setDriverCancelOrder(inRouteOrder);
+        setTruckOrders(current => current.map(item => item.id === order.id ? inRouteOrder : item));
+      }
       await salesService.markDeliveryAttemptFailed(order.id, reason, driverCancelIdempotencyKey);
       setDriverCancellationReasons(current => ({ ...current, [order.id]: reason }));
       setDriverCancelOrder(null);
@@ -350,8 +362,12 @@ export default function LogisticsScreen() {
       await salesService.markDelivered(order.id, payload);
       const raw = await salesService.getOrder(order.id).catch(() => ({} as Record<string, any>));
       const customer = raw.customer ?? raw.client ?? {};
-      const customerId = String(raw.customerId ?? raw.clientId ?? customer.id ?? order.customerId ?? '');
+      const rawCustomerId = raw.customerId || raw.clientId || customer.id || customer.customerId || order.customerId;
+      const customerId = rawCustomerId == null ? '' : String(rawCustomerId).trim();
       const linkedClient = /^\d+$/.test(customerId) ? await clientsService.getClientById(customerId).catch(() => null) : null;
+      const contact = customer.contact ?? customer.contactInfo ?? customer.contactDetails ?? {};
+      const nestedCustomer = customer.customer ?? customer.client ?? {};
+      const nestedContact = nestedCustomer.contact ?? nestedCustomer.contactInfo ?? {};
       const rawItems = raw.items ?? raw.orderItems ?? raw.details ?? order.items ?? [];
       const methodLabel = driverPaymentChoice === 'account' ? 'Cuenta corriente'
         : driverPaymentChoice === 'partial' ? `Pago parcial (${driverPaymentMethod === 'cash' ? 'efectivo' : driverPaymentMethod === 'transfer' ? 'transferencia' : 'mixto'})`
@@ -366,7 +382,11 @@ export default function LogisticsScreen() {
         responsible: user?.fullName ?? user?.username ?? 'Repartidor',
       };
       setDriverReceiptError(null);
-      setDriverReceiptPrompt({ data, email: String(raw.customerEmail ?? customer.email ?? raw.email ?? order.customerEmail ?? linkedClient?.email ?? '') || undefined, phone: String(raw.customerPhone ?? customer.phone ?? customer.phoneNumber ?? customer.mobile ?? raw.phone ?? raw.phoneNumber ?? order.customerPhone ?? linkedClient?.phone ?? '') || undefined });
+      setDriverReceiptPrompt({
+        data,
+        email: firstContactValue(raw.customerEmail, raw.clientEmail, customer.email, customer.mail, contact.email, contact.mail, nestedCustomer.email, nestedContact.email, raw.email, order.customerEmail, linkedClient?.email),
+        phone: firstContactValue(raw.customerPhone, raw.clientPhone, customer.phone, customer.phoneNumber, customer.mobile, customer.cellphone, contact.phone, contact.phoneNumber, contact.mobile, contact.cellphone, nestedCustomer.phone, nestedContact.phone, raw.phone, raw.phoneNumber, order.customerPhone, linkedClient?.phone),
+      });
       setDriverDeliveryOrder(null);
       setDriverDeliveryIdempotencyKey('');
       if (selectedTruck) await loadTruckOrders(selectedTruck);
@@ -377,8 +397,7 @@ export default function LogisticsScreen() {
 
   const shareDriverReceipt = async (channel: ReceiptChannel) => {
     if (!driverReceiptPrompt) return;
-    const recipient = channel === 'email' ? driverReceiptPrompt.email : driverReceiptPrompt.phone;
-    if (!recipient) { setDriverReceiptError(channel === 'email' ? 'El pedido no incluye correo del cliente.' : 'El pedido no incluye teléfono del cliente.'); return; }
+    const recipient = (channel === 'email' ? driverReceiptPrompt.email : driverReceiptPrompt.phone) ?? '';
     setDriverReceiptSharing(channel);
     setDriverReceiptError(null);
     try { await receiptService.generateAndShare(driverReceiptPrompt.data, channel, recipient); setDriverReceiptPrompt(null); }
@@ -619,8 +638,8 @@ export default function LogisticsScreen() {
       </Modal>
       <Modal visible={!!driverReceiptPrompt} transparent animationType="fade" onRequestClose={() => !driverReceiptSharing && setDriverReceiptPrompt(null)}>
         <View style={styles.modalBackdrop}><View style={styles.driverReceiptModal}><View style={styles.deliveryHeader}><View style={styles.assignmentModalIcon}><Ionicons name="document-text-outline" size={22} color={colors.primary} /></View><View style={styles.assignmentModalTitleWrap}><Text style={styles.assignmentModalTitle}>Entrega registrada</Text><Text style={styles.assignmentModalHint}>{driverReceiptPrompt?.data.code} · {driverReceiptPrompt?.data.customer}</Text></View></View><Text style={styles.receiptSuccessText}>La entrega y el pago se registraron correctamente.</Text><Text style={styles.receiptPromptText}>¿Querés compartir el comprobante PDF?</Text>
-          {driverReceiptPrompt?.email && <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('email')} disabled={!!driverReceiptSharing}><Ionicons name="mail-outline" size={19} color={colors.primary} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>Correo electrónico</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt.email}</Text></View>{driverReceiptSharing === 'email' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>}
-          {driverReceiptPrompt?.phone && <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('whatsapp')} disabled={!!driverReceiptSharing}><Ionicons name="logo-whatsapp" size={19} color={colors.success} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>WhatsApp</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt.phone}</Text></View>{driverReceiptSharing === 'whatsapp' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>}
+          <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('email')} disabled={!!driverReceiptSharing}><Ionicons name="mail-outline" size={19} color={colors.primary} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>Enviar al correo del cliente</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt?.email || 'Elegir destinatario al compartir'}</Text></View>{driverReceiptSharing === 'email' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>
+          <TouchableOpacity style={styles.receiptChannelButton} onPress={() => void shareDriverReceipt('whatsapp')} disabled={!!driverReceiptSharing}><Ionicons name="logo-whatsapp" size={19} color={colors.success} /><View style={styles.receiptChannelCopy}><Text style={styles.receiptChannelTitle}>Enviar por WhatsApp al cliente</Text><Text style={styles.receiptChannelTarget}>{driverReceiptPrompt?.phone || 'Elegir destinatario al compartir'}</Text></View>{driverReceiptSharing === 'whatsapp' ? <ActivityIndicator color={colors.primary} /> : <Ionicons name="chevron-forward" size={18} color={colors.primary} />}</TouchableOpacity>
           {!!driverReceiptError && <Text style={styles.assignmentErrorText}>{driverReceiptError}</Text>}<TouchableOpacity style={styles.receiptDismiss} onPress={() => setDriverReceiptPrompt(null)} disabled={!!driverReceiptSharing}><Text style={styles.confirmBackText}>Ahora no</Text></TouchableOpacity>
         </View></View>
       </Modal>

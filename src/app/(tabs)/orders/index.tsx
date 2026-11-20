@@ -1128,7 +1128,23 @@ export default function OrdersScreen() {
               return <View key={key} style={styles.selectorOption}>
                 <View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{product.name}</Text><Text style={styles.selectorOptionSub}>{product.category.name} · {money(product.price)} / {product.unit}{product.sku ? ` · ${product.sku}` : ''}</Text><Text style={styles.selectorOptionSub}>En el pedido: {inCart} {product.unit}</Text></View>
                 <View style={styles.productQuantityControls}>
-                  <TextInput style={styles.productQuantityInput} value={quantity} onChangeText={value => setProductQuantities(current => ({ ...current, [key]: value.replace(/\D/g, '').slice(0, 6) }))} onEndEditing={() => { const parsed = Number(quantity); if (Number.isInteger(parsed)) setPickerProductQuantity(product, parsed); }} keyboardType="number-pad" inputMode="numeric" maxLength={6} accessibilityLabel={`Cantidad de ${product.name}`} />
+                  <TextInput
+                    style={styles.productQuantityInput}
+                    value={quantity}
+                    onChangeText={value => {
+                      const digits = value.replace(/\D/g, '').slice(0, 6);
+                      setProductQuantities(current => ({ ...current, [key]: digits }));
+                      if (digits) setPickerProductQuantity(product, Number(digits));
+                    }}
+                    onEndEditing={() => {
+                      const parsed = Number(quantity);
+                      setPickerProductQuantity(product, Number.isInteger(parsed) ? parsed : 0);
+                    }}
+                    keyboardType="number-pad"
+                    inputMode="numeric"
+                    maxLength={6}
+                    accessibilityLabel={`Cantidad de ${product.name}`}
+                  />
                   <View style={styles.productQuantityStepper}>
                     <TouchableOpacity style={styles.productStepButton} onPress={() => setPickerProductQuantity(product, Math.max(0, Number(quantity || 0) - 1))} accessibilityRole="button" accessibilityLabel={`Restar una unidad de ${product.name}`}><Ionicons name="remove" size={16} color={colors.primary} /></TouchableOpacity>
                     <TouchableOpacity style={styles.productStepButton} onPress={() => setPickerProductQuantity(product, Number(quantity || 0) + 1)} accessibilityRole="button" accessibilityLabel={`Sumar una unidad de ${product.name}`}><Ionicons name="add" size={16} color={colors.primary} /></TouchableOpacity>
