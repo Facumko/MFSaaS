@@ -9,12 +9,13 @@ import {
   View,
 } from 'react-native';
 
-// TODO: Reemplazar por el texto legal real de Términos y Condiciones.
-const PLACEHOLDER_TEXT = `Este es un texto de referencia (placeholder) para los Términos y Condiciones de la aplicación.
-
-Acá va a ir el contenido legal definitivo: condiciones de uso del servicio, responsabilidades del usuario, políticas de cuenta y cualquier cláusula que el equipo legal considere necesaria.
-
-Reemplazar este bloque antes de publicar la app.`;
+const TERMS = [
+  ['Uso de la aplicación', 'La aplicación está destinada a apoyar la gestión de clientes, catálogo, pedidos, pagos y logística de MF Distribuciones. Cada persona debe usarla con la cuenta y los permisos que le fueron asignados.'],
+  ['Cuentas y permisos', 'El usuario es responsable de mantener la confidencialidad de sus credenciales y de las acciones realizadas desde su cuenta. Si detecta un acceso que no reconoce, debe avisar al administrador de la organización.'],
+  ['Información registrada', 'Quien carga o modifica información debe procurar que sea correcta y mantenerla actualizada. Los datos de clientes, productos, pedidos, pagos y entregas deben utilizarse únicamente para las tareas autorizadas de la organización.'],
+  ['Disponibilidad y soporte', 'La disponibilidad puede depender de la conexión, los servicios externos y tareas de mantenimiento. Ante un problema, el usuario debe comunicarse con el administrador o con el canal de soporte que la organización tenga configurado.'],
+  ['Vigencia', 'La organización puede actualizar estas condiciones cuando cambien las funciones o las reglas de uso. La versión vigente será la que se muestre dentro de la aplicación.'],
+];
 
 export default function TermsScreen() {
   return (
@@ -27,7 +28,9 @@ export default function TermsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.body}>{PLACEHOLDER_TEXT}</Text>
+        <Text style={styles.notice}>Condiciones de uso interno para el equipo de MF Distribuciones.</Text>
+        {TERMS.map(([heading, body]) => <View key={heading} style={styles.section}><Text style={styles.heading}>{heading}</Text><Text style={styles.body}>{body}</Text></View>)}
+        <Text style={styles.note}>Para recibir el texto legal aprobado por la organización, consultá con el administrador del sistema.</Text>
       </ScrollView>
     </View>
   );
@@ -55,7 +58,12 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.lg,
+    gap: spacing.lg,
   },
+  section: { gap: spacing.xs },
+  heading: { ...typography.label, color: colors.textPrimary },
+  notice: { ...typography.body, color: colors.textPrimary, lineHeight: 22 },
+  note: { ...typography.caption, color: colors.textDisabled, lineHeight: 20 },
   body: {
     ...typography.body,
     color: colors.textSecondary,

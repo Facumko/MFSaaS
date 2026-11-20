@@ -3,8 +3,8 @@ import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
+  Modal,
   RefreshControl,
   ScrollView,
   Switch,
@@ -43,6 +43,7 @@ export default function ProductManagementScreen() {
   const [error, setError] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [pendingProduct, setPendingProduct] = useState<IProduct | null>(null);
   const [search, setSearch] = useState("");
   const [sortAsc, setSortAsc] = useState(true);
   const [categoryId, setCategoryId] = useState('');
@@ -93,20 +94,32 @@ export default function ProductManagementScreen() {
     }, [loadProducts]),
   );
 
-  const toggleActive = (product: IProduct) => {
+  const toggleActive = (product: IProduct) => setPendingProduct(product);
+
+  const confirmToggleActive = async () => {
+    if (!pendingProduct) return;
+
+    const product = pendingProduct;
     const activating = !product.active;
-    void (async () => {
-      setBusyId(product.id);
-      setToggleError(null);
-      try {
-        if (activating) await productsService.activateProduct(product.id);
-        else await productsService.deactivateProduct(product.id);
-        await loadProducts();
-      } catch (err: any) {
-        const errorMessage = err?.response?.data?.message || "No se pudo cambiar el estado del producto.";
-        setToggleError(errorMessage);
-      } finally { setBusyId(null); }
-    })();
+
+    setBusyId(product.id);
+    setPendingProduct(null);
+    setToggleError(null);
+
+    try {
+      if (activating) await productsService.activateProduct(product.id);
+      else await productsService.deactivateProduct(product.id);
+
+      await loadProducts();
+    } catch (err: any) {
+      setToggleError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "No se pudo cambiar el estado del producto.",
+      );
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const renderItem = ({ item }: { item: IProduct }) => (
@@ -252,6 +265,48 @@ export default function ProductManagementScreen() {
         <Ionicons name="add" size={25} color={colors.textInverse} />
       </TouchableOpacity>
       }
+      <Modal
+        visible={pendingProduct !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPendingProduct(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.dialog}>
+            <View style={styles.dialogIcon}>
+              <Ionicons
+                name={pendingProduct?.active ? "eye-off-outline" : "eye-outline"}
+                size={23}
+                color={colors.primary}
+              />
+            </View>
+            <Text style={styles.dialogTitle}>
+              {pendingProduct?.active ? "Desactivar producto" : "Activar producto"}
+            </Text>
+            <Text style={styles.dialogMessage}>
+              {pendingProduct?.active
+                ? `¿Querés desactivar “${pendingProduct.name}”? No estará disponible para nuevos pedidos.`
+                : `¿Querés volver a activar “${pendingProduct?.name}”?`}
+            </Text>
+            <View style={styles.dialogActions}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => setPendingProduct(null)}
+              >
+                <Text style={styles.cancelButtonText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.confirmButton}
+                onPress={() => void confirmToggleActive()}
+              >
+                <Text style={styles.confirmButtonText}>
+                  {pendingProduct?.active ? "Desactivar" : "Activar"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -374,6 +429,61 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   retryText: { ...typography.label, color: colors.textInverse },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: spacing.xl,
+    backgroundColor: "rgba(20, 24, 28, 0.48)",
+  },
+  dialog: {
+    width: "100%",
+    maxWidth: 400,
+    padding: spacing.xl,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    elevation: 12,
+  },
+  dialogIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  dialogTitle: { ...typography.subheading, color: colors.textPrimary, textAlign: "center" },
+  dialogMessage: {
+    ...typography.body,
+    color: colors.textSecondary,
+    textAlign: "center",
+    marginTop: spacing.sm,
+    lineHeight: 22,
+  },
+  dialogActions: {
+    flexDirection: "row",
+    alignSelf: "stretch",
+    gap: spacing.sm,
+    marginTop: spacing.xl,
+  },
+  cancelButton: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.background,
+  },
+  cancelButtonText: { ...typography.label, color: colors.textSecondary },
+  confirmButton: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+  },
+  confirmButtonText: { ...typography.label, color: colors.textInverse },
   fab: {
     position: "absolute",
     right: spacing.lg,

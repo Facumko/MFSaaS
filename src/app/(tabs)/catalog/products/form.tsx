@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FormErrorBanner } from "../../../../components/ui/FormErrorBanner";
+import { SelectField } from "../../../../components/ui/SelectField";
 import { PaginationControls, pageItems } from "../../../../components/ui/PaginationControls";
 import { useCategories } from "../../../../hooks";
 import { usePermissions } from "../../../../hooks/usePermissions";

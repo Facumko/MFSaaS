@@ -21,6 +21,11 @@ export default function AboutScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.intro}>
+          <Text style={styles.appName}>MF Distribuciones</Text>
+          <Text style={styles.introText}>Herramienta de gestión para organizar clientes, productos, pedidos, pagos y logística desde un mismo lugar.</Text>
+          <Text style={styles.introText}>Las funciones disponibles dependen del rol asignado a cada usuario.</Text>
+        </View>
         <View style={styles.section}>
           <Pressable
             style={styles.row}
@@ -93,7 +98,11 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: spacing.lg,
+    gap: spacing.lg,
   },
+  intro: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.lg, gap: spacing.sm },
+  appName: { ...typography.subheading, color: colors.textPrimary },
+  introText: { ...typography.body, color: colors.textSecondary, lineHeight: 22 },
   section: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,

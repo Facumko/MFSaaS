@@ -19,7 +19,7 @@ import { DatePickerCalendar } from '../../../components/ui/DatePickerCalendar';
 import { clientsService } from '../../../services/api/clientsService';
 import { logisticsService, Truck } from '../../../services/api/logisticsService';
 import { productsService } from '../../../services/api/productsService';
-import { DeliveryPaymentRequest, OrderListItem, salesService } from '../../../services/api/salesService';
+import { OrderDeliveryRequest, OrderListItem, salesService } from '../../../services/api/salesService';
 import { ledgerService } from '../../../services/api/ledgerService';
 import { ReceiptChannel, ReceiptData, receiptService } from '../../../services/api/receiptService';
 import { useCartStore } from '../../../store/cartStore';
@@ -58,9 +58,9 @@ export default function OrdersScreen() {
   const params = useLocalSearchParams<{ newClientId?: string }>();
   const newClientId = Array.isArray(params.newClientId) ? params.newClientId[0] : params.newClientId;
   const user = useAuthStore(state => state.user);
-  const { canAssignOrdersToTruck, canViewOrders, canManageClients, canRegisterSale } = usePermissions();
+  const { canAssignOrdersToTruck, canViewOrders, canManageClients, canRegisterSale, isAdmin } = usePermissions();
   const isDriver = user?.role === 'delivery';
-  const { items, total, itemCount, updateQty, clearCart } = useCartStore();
+  const { items, total, itemCount, addItem, updateQty, clearCart } = useCartStore();
   const [mode, setMode] = useState<ScreenMode>(isDriver ? 'history' : 'new');
   const [clients, setClients] = useState<IClientSummary[]>([]);
   const [clientSearch, setClientSearch] = useState('');
@@ -75,6 +75,11 @@ export default function OrdersScreen() {
   const [newAddressCity, setNewAddressCity] = useState('');
   const [savingAddress, setSavingAddress] = useState(false);
   const [productsExpanded, setProductsExpanded] = useState(false);
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
+  const [productPickerSearch, setProductPickerSearch] = useState('');
+  const [availableProducts, setAvailableProducts] = useState<IProduct[]>([]);
+  const [loadingProductPicker, setLoadingProductPicker] = useState(false);
+  const [productPickerError, setProductPickerError] = useState<string | null>(null);
   const [loadingClients, setLoadingClients] = useState(true);
   const [loadingAddresses, setLoadingAddresses] = useState(false);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -118,10 +123,11 @@ export default function OrdersScreen() {
   const [orderError, setOrderError] = useState<string | null>(null);
   const [deliveryOrder, setDeliveryOrder] = useState<OrderListItem | null>(null);
   const [deliveryChoice, setDeliveryChoice] = useState<DeliveryPaymentChoice | null>(null);
-  const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState<Exclude<DeliveryPaymentMethod, 'CURRENT_ACCOUNT'> | null>(null);
   const [deliveryAmount, setDeliveryAmount] = useState('');
   const [receiptPaymentMethod, setReceiptPaymentMethod] = useState<ReceiptPaymentMethod>('cash');
   const [mixedCashAmount, setMixedCashAmount] = useState('');
+  const [deliveryAlreadyMarked, setDeliveryAlreadyMarked] = useState(false);
+  const [pendingDeliveryPayment, setPendingDeliveryPayment] = useState<PendingDeliveryPayment | null>(null);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [deliveryStatusUnknown, setDeliveryStatusUnknown] = useState(false);
   const [deliverySubmitting, setDeliverySubmitting] = useState(false);
@@ -150,11 +156,13 @@ export default function OrdersScreen() {
   }, []);
 
   const visibleClients = useMemo(() => {
-    const query = normalizeSearch(clientSearch.trim());
-    if (!query) return clients;
+    const rawQuery = clientSearch.trim();
+    const query = normalizeSearch(rawQuery);
+    const taxQuery = rawQuery.replace(/\D/g, '');
+    if (!query && !taxQuery) return clients;
     return clients.filter(client =>
-      normalizeSearch(client.businessName).startsWith(query) ||
-      client.taxId.startsWith(query),
+      (!!query && normalizeSearch(client.businessName ?? '').includes(query)) ||
+      (!!taxQuery && String(client.taxId ?? '').replace(/\D/g, '').includes(taxQuery)),
     );
   }, [clientSearch, clients]);
 
@@ -172,6 +180,15 @@ export default function OrdersScreen() {
   const pageTrucks = useMemo(() => pageItems(visibleTrucks, truckPickerPage), [visibleTrucks, truckPickerPage]);
   const pageAssignmentTrucks = useMemo(() => pageItems(trucks, assignmentTruckPage), [trucks, assignmentTruckPage]);
   const pageEditProducts = useMemo(() => pageItems(editProducts, editProductPage), [editProducts, editProductPage]);
+  const visiblePickerProducts = useMemo(() => {
+    const query = normalizeSearch(productPickerSearch);
+    if (!query) return availableProducts;
+    return availableProducts.filter(product =>
+      normalizeSearch(product.name).includes(query) ||
+      normalizeSearch(product.sku ?? '').includes(query) ||
+      normalizeSearch(product.category.name).includes(query),
+    );
+  }, [availableProducts, productPickerSearch]);
 
   const visibleHistoryOrders = useMemo(() => {
     const clientQuery = normalizeSearch(historyClient);
@@ -530,22 +547,12 @@ export default function OrdersScreen() {
   const openDeliveryConfirmation = (order: OrderListItem) => {
     setDeliveryOrder(order);
     setDeliveryChoice(null);
-    setDeliveryPaymentMethod(null);
     setDeliveryAmount('');
     setReceiptPaymentMethod('cash');
     setMixedCashAmount('');
+    setDeliveryAlreadyMarked(false);
     setDeliveryError(null);
     setDeliveryStatusUnknown(false);
-  };
-
-  const closeDeliveryConfirmation = () => {
-    if (deliveryAlreadyMarked && deliveryChoice === 'partial' && deliveryOrder) {
-      const amount = deliveryChoice === 'full'
-        ? deliveryOrder.total
-        : Number(deliveryAmount.trim().replace(',', '.'));
-      setPendingDeliveryPayment({ order: deliveryOrder, choice: deliveryChoice, amount, method: receiptPaymentMethod, cashAmount: mixedCashAmount });
-    }
-    setDeliveryOrder(null);
   };
 
   const resumePendingDeliveryPayment = () => {
@@ -554,10 +561,14 @@ export default function OrdersScreen() {
     setDeliveryChoice(pendingDeliveryPayment.choice);
     setReceiptPaymentMethod(pendingDeliveryPayment.method);
     setMixedCashAmount(pendingDeliveryPayment.cashAmount);
-    setDeliveryAmount(pendingDeliveryPayment.choice === 'partial' ? String(pendingDeliveryPayment.amount) : '');
+    setDeliveryAmount(String(pendingDeliveryPayment.amount));
     setDeliveryError(null);
     setDeliveryAlreadyMarked(true);
     setDeliveryStatusUnknown(false);
+  };
+
+  const closeDeliveryConfirmation = () => {
+    setDeliveryOrder(null);
   };
 
   const confirmDelivery = async () => {
@@ -566,130 +577,91 @@ export default function OrdersScreen() {
       setDeliveryError('Elegí cómo se resolvió el pago para continuar.');
       return;
     }
-    let payload: OrderDeliveryRequest = { paymentMethod: 'CURRENT_ACCOUNT' };
-    if (deliveryChoice !== 'account') {
-      if (!deliveryPaymentMethod) {
-        setDeliveryError('Elegí el medio de pago recibido.');
-        return;
-      }
-      const amount = deliveryChoice === 'full'
+
+    const amount = deliveryChoice === 'account'
+      ? 0
+      : deliveryChoice === 'full'
         ? order.total
         : Number(deliveryAmount.trim().replace(',', '.'));
-      const cashInput = mixedCashAmount.trim();
-      const transferInput = mixedTransferAmount.trim();
-      const cashAmount = deliveryPaymentMethod === 'MIXED'
-        ? (cashInput ? Number(cashInput.replace(',', '.')) : 0)
-        : deliveryPaymentMethod === 'CASH' ? amount : 0;
-      const transferAmount = deliveryPaymentMethod === 'MIXED'
-        ? (transferInput ? Number(transferInput.replace(',', '.')) : 0)
-        : deliveryPaymentMethod === 'TRANSFER' ? amount : 0;
-      const receivedAmount = cashAmount + transferAmount;
-      if (!Number.isFinite(order.total) || order.total <= 0) {
-        setDeliveryError('El total del pedido no es válido. Revisá el detalle antes de confirmar la entrega.');
-        return;
-      }
-      if (deliveryPaymentMethod === 'MIXED') {
-        if (!Number.isFinite(cashAmount) || !Number.isFinite(transferAmount) || cashAmount < 0 || transferAmount < 0) {
-          setDeliveryError('Ingresá importes válidos y no negativos para efectivo y transferencia.');
-          return;
-        }
-        if (deliveryChoice === 'full' && Math.abs(receivedAmount - order.total) > 0.01) {
-          setDeliveryError(`La suma de efectivo y transferencia debe ser igual al total (${money(order.total)}).`);
-          return;
-        }
-        if (deliveryChoice === 'partial' && (!Number.isFinite(receivedAmount) || receivedAmount <= 0 || receivedAmount >= order.total)) {
-          setDeliveryError(`La suma de los medios debe ser mayor que cero y menor que el total (${money(order.total)}).`);
-          return;
-        }
-      } else if (!Number.isFinite(amount) || amount <= 0 || (deliveryChoice === 'partial' && amount >= order.total)) {
-        setDeliveryError(deliveryChoice === 'partial'
-          ? `Ingresá un pago mayor que cero y menor que el total (${money(order.total)}).`
-          : 'El total del pedido no es válido para registrar un pago.');
-        return;
-      }
-      if (deliveryChoice === 'partial' && deliveryPaymentMethod !== 'MIXED') {
-        setDeliveryError('El backend solo acepta importes parciales con el método MIXED. Elegí MIXED e indicá cuánto fue en efectivo y cuánto por transferencia.');
-        return;
-      }
-      payload = deliveryPaymentMethod === 'MIXED'
-        ? { paymentMethod: 'MIXED', cashAmount, transferAmount }
-        : { paymentMethod: deliveryPaymentMethod };
-    }
-    const cashPart = Number(mixedCashAmount.trim().replace(',', '.'));
-    if (deliveryChoice !== 'account' && receiptPaymentMethod === 'mixed' && (!Number.isFinite(cashPart) || cashPart <= 0 || cashPart >= amount)) {
-      setDeliveryError('En un pago mixto, el efectivo debe ser mayor que cero y menor que el importe recibido.');
+    if (!Number.isFinite(order.total) || order.total <= 0) {
+      setDeliveryError('El total del pedido no es válido. Revisá el detalle antes de confirmar la entrega.');
       return;
     }
-    const deliveryPayment: DeliveryPaymentRequest = deliveryChoice === 'account' || deliveryChoice === 'partial'
+    if (deliveryChoice === 'partial' && (!Number.isFinite(amount) || amount <= 0 || amount >= order.total)) {
+      setDeliveryError('Ingresá un pago mayor que cero y menor que el total (' + money(order.total) + ').');
+      return;
+    }
+
+    const cashPart = receiptPaymentMethod === 'mixed'
+      ? Number(mixedCashAmount.trim().replace(',', '.'))
+      : receiptPaymentMethod === 'cash' ? amount : 0;
+    const transferPart = receiptPaymentMethod === 'mixed'
+      ? amount - cashPart
+      : receiptPaymentMethod === 'transfer' ? amount : 0;
+    if (deliveryChoice !== 'account' && receiptPaymentMethod === 'mixed' &&
+        (!Number.isFinite(cashPart) || !Number.isFinite(transferPart) || cashPart <= 0 || transferPart <= 0)) {
+      setDeliveryError('Para un pago mixto, ingresá efectivo mayor que cero y menor que el importe recibido.');
+      return;
+    }
+
+    const deliveryPayload: OrderDeliveryRequest = deliveryChoice === 'account' || deliveryChoice === 'partial'
       ? { paymentMethod: 'CURRENT_ACCOUNT' }
       : receiptPaymentMethod === 'cash'
         ? { paymentMethod: 'CASH' }
         : receiptPaymentMethod === 'transfer'
           ? { paymentMethod: 'TRANSFER' }
-          : { paymentMethod: 'MIXED', cashAmount: cashPart, transferAmount: amount - cashPart };
+          : { paymentMethod: 'MIXED', cashAmount: cashPart, transferAmount: transferPart };
 
     setDeliverySubmitting(true);
     setDeliveryError(null);
     let delivered = deliveryAlreadyMarked;
-    let partialPaymentRegistered = false;
+
     try {
       if (deliveryStatusUnknown) {
-        let latest: Record<string, any>;
-        try {
-          latest = await salesService.getOrder(order.id);
-        } catch {
-          throw new Error('No se pudo confirmar la entrega. Revisá la conexión y actualizá el pedido antes de volver a intentar.');
-        }
+        const latest = await salesService.getOrder(order.id);
         const status = String(latest.status ?? '').toUpperCase();
         if (status === 'DELIVERED') {
+          delivered = true;
+          setDeliveryAlreadyMarked(true);
           setDeliveryStatusUnknown(false);
-          setSuccessMessage(`${order.code} ya figura entregado en el servidor. Revisá la cuenta corriente para confirmar el registro del cobro.`);
-          setDeliveryOrder(null);
-          void loadOrders();
-          return;
         } else if (status === 'IN_ROUTE') {
+          delivered = false;
           setDeliveryStatusUnknown(false);
         } else {
-          throw new Error(`El pedido ahora figura como ${status || 'estado desconocido'}; no se reenvió la entrega. Actualizá el historial antes de continuar.`);
+          throw new Error('El pedido figura como ' + (status || 'estado desconocido') + '; no se registró el cobro. Actualizá el historial antes de continuar.');
         }
       }
-      try {
-        await salesService.markDelivered(order.id, payload);
-      } catch (requestError) {
-        let latest: Record<string, any>;
+
+      if (!delivered) {
         try {
-          await salesService.markDelivered(order.id, deliveryPayment);
-        } catch (requestError) {
-          let latest: Record<string, any>;
+          await salesService.markDelivered(order.id, deliveryPayload);
+          delivered = true;
+          setDeliveryAlreadyMarked(true);
+        } catch (deliveryError) {
           try {
-            latest = await salesService.getOrder(order.id);
-          } catch {
+            const latest = await salesService.getOrder(order.id);
+            if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') throw deliveryError;
+            delivered = true;
+            setDeliveryAlreadyMarked(true);
+          } catch (verificationError) {
+            if (verificationError === deliveryError) throw deliveryError;
             setDeliveryStatusUnknown(true);
-            throw requestError;
-          }
-          if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') {
-            setDeliveryStatusUnknown(true);
-            throw requestError;
+            throw new Error('No se pudo confirmar si la entrega se registró. Actualizá el pedido antes de volver a intentar.');
           }
         }
-        delivered = true;
-        setDeliveryAlreadyMarked(true);
-        setDeliveryStatusUnknown(false);
       }
 
       if (deliveryChoice === 'partial') {
         let customerId = order.customerId;
         if (!customerId) {
-          const raw = await salesService.getOrder(order.id);
-          const customer = raw.customer ?? raw.client ?? {};
-          customerId = String(raw.customerId ?? raw.clientId ?? customer.id ?? '');
+          const rawOrder = await salesService.getOrder(order.id);
+          const customer = rawOrder.customer ?? rawOrder.client ?? {};
+          customerId = String(rawOrder.customerId ?? rawOrder.clientId ?? customer.id ?? '');
         }
-        if (String(latest.status ?? '').toUpperCase() !== 'DELIVERED') {
-          setDeliveryStatusUnknown(true);
-          throw requestError;
+        if (!customerId || !/^\d+$/.test(customerId)) {
+          throw new Error('La entrega quedó registrada, pero no se pudo identificar al cliente para aplicar el pago.');
         }
         await ledgerService.registerPayment(customerId, amount, receiptPaymentMethod);
-        partialPaymentRegistered = true;
       }
 
       const raw = await salesService.getOrder(order.id).catch(() => ({} as Record<string, any>));
@@ -700,7 +672,13 @@ export default function OrdersScreen() {
         quantity: Number(item.quantity ?? item.qty ?? 0),
         unitPrice: Number(item.unitPrice ?? item.price ?? item.product?.unitPrice ?? 0),
       })) : [];
-      const methodLabel = deliveryChoice === 'account' ? 'Cuenta corriente' : receiptPaymentMethod === 'cash' ? 'Efectivo' : receiptPaymentMethod === 'transfer' ? 'Transferencia' : `Mixto (efectivo ${money(Number(mixedCashAmount.replace(',', '.')) || 0)}; transferencia ${money(Math.max(0, amount - (Number(mixedCashAmount.replace(',', '.')) || 0)))})`;
+      const methodLabel = deliveryChoice === 'account'
+        ? 'Cuenta corriente'
+        : receiptPaymentMethod === 'cash'
+          ? 'Efectivo'
+          : receiptPaymentMethod === 'transfer'
+            ? 'Transferencia'
+            : 'Mixto (efectivo ' + money(cashPart) + '; transferencia ' + money(transferPart) + ')';
       const receiptData: ReceiptData = {
         code: order.code,
         date: formatDateTime(new Date().toISOString()),
@@ -720,32 +698,42 @@ export default function OrdersScreen() {
           clientPhone ||= clientInfo.phone;
         } catch { /* Mantener los datos de contacto incluidos en el pedido, si los hay. */ }
       }
+
       setReceiptShareError(null);
       setReceiptPrompt({ data: receiptData, email: clientEmail || undefined, phone: clientPhone || undefined });
-
       const paidLabel = deliveryChoice === 'account'
         ? 'Quedó en cuenta corriente.'
         : deliveryChoice === 'full'
-          ? `Se registró el pago completo de ${money(amount)}.`
-          : `Se registró ${money(amount)}; el saldo de ${money(order.total - amount)} quedó en cuenta corriente.`;
-      setSuccessMessage(`${order.code} entregado correctamente. ${paidLabel}`);
+          ? 'Se registró el pago completo de ' + money(amount) + '.'
+          : 'Se registró ' + money(amount) + '; el saldo de ' + money(order.total - amount) + ' quedó en cuenta corriente.';
+      setSuccessMessage(order.code + ' entregado correctamente. ' + paidLabel);
+      setPendingDeliveryPayment(null);
       setDeliveryOrder(null);
+      setDeliveryAlreadyMarked(false);
       setDeliveryStatusUnknown(false);
       await loadOrders();
     } catch (error) {
       if (delivered) {
         setDeliveryAlreadyMarked(true);
-        if (deliveryChoice === 'partial' && !partialPaymentRegistered) setPendingDeliveryPayment({ order, choice: deliveryChoice, amount, method: receiptPaymentMethod, cashAmount: mixedCashAmount });
-        setDeliveryError(`El pedido ya quedó entregado, pero no se pudo registrar el pago. Podés reintentar el pago sin volver a confirmar la entrega. Si el error fue de conexión, revisá la cuenta corriente antes de reintentar para evitar duplicarlo. ${parseApiError(error, 'Error al registrar el pago.').message}`);
+        if (deliveryChoice === 'partial') {
+          const status = (error as any)?.response?.status;
+          if (status >= 400 && status < 500) {
+            setPendingDeliveryPayment({ order, choice: deliveryChoice, amount, method: receiptPaymentMethod, cashAmount: mixedCashAmount });
+          }
+          setDeliveryError(status >= 400 && status < 500
+            ? 'El pedido ya quedó entregado, pero el pago fue rechazado. Corregí los datos y reintentá el pago. ' + parseApiError(error, 'Error al registrar el pago.').message
+            : 'El pedido ya quedó entregado, pero no se pudo confirmar si el pago se registró. Revisá la cuenta corriente antes de reintentar para evitar duplicarlo.');
+        } else {
+          setDeliveryError('La entrega quedó registrada, pero no se pudo completar el comprobante. ' + parseApiError(error, 'Error al preparar los datos del comprobante.').message);
+        }
         void loadOrders();
       } else {
-        setDeliveryError(`${deliveryStatusUnknown ? 'No se pudo confirmar el estado de la entrega. Actualizá el pedido antes de volver a intentar. ' : ''}${parseApiError(error, 'No se pudo confirmar la entrega.').message}`);
+        setDeliveryError((deliveryStatusUnknown ? 'No se pudo confirmar el estado de la entrega. Actualizá el pedido antes de volver a intentar. ' : '') + parseApiError(error, 'No se pudo confirmar la entrega.').message);
       }
     } finally {
       setDeliverySubmitting(false);
     }
   };
-
   const shareReceipt = async (channel: ReceiptChannel) => {
     if (!receiptPrompt) return;
     const recipient = channel === 'email' ? receiptPrompt.email : receiptPrompt.phone;
@@ -764,7 +752,20 @@ export default function OrdersScreen() {
     } finally { setReceiptSharing(null); }
   };
 
-  const openCatalog = () => router.push({ pathname: '/(tabs)/catalog' as any, params: { returnTo: 'orders' } });
+  const openCatalog = async () => {
+    setProductPickerOpen(true);
+    setProductPickerSearch('');
+    setProductPickerError(null);
+    setLoadingProductPicker(true);
+    try {
+      const result = await productsService.getProducts('', [], [], true);
+      setAvailableProducts(result.items);
+    } catch (error) {
+      setProductPickerError(parseApiError(error, 'No se pudieron cargar los productos.').message);
+    } finally {
+      setLoadingProductPicker(false);
+    }
+  };
   const renderOrder = (order: OrderListItem) => {
     const truck = trucks.find(item => String(item.id) === order.truckId);
     const assignedTruckName = order.truckLicensePlate ?? truck?.licensePlate ?? (order.truckId ? `Camión #${order.truckId}` : 'Sin camión asignado');
@@ -846,6 +847,7 @@ export default function OrdersScreen() {
             <TouchableOpacity onPress={() => void loadOrders()} style={styles.refreshButton} accessibilityLabel="Actualizar pedidos"><Ionicons name="refresh" size={19} color={colors.primary} /></TouchableOpacity>
           </View>
           {!!successMessage && <View style={styles.successBanner}><Ionicons name="checkmark-circle" size={20} color={colors.success} /><Text style={styles.successBannerText}>{successMessage}</Text><TouchableOpacity onPress={() => setSuccessMessage(null)} accessibilityLabel="Cerrar confirmación"><Ionicons name="close" size={18} color={colors.success} /></TouchableOpacity></View>}
+          {!!pendingDeliveryPayment && <View style={styles.pendingPaymentBanner}><Text style={styles.pendingPaymentText}>{pendingDeliveryPayment.order.code} ya fue entregado. Quedó pendiente registrar el pago parcial.</Text><TouchableOpacity style={styles.pendingPaymentButton} onPress={resumePendingDeliveryPayment}><Text style={styles.pendingPaymentButtonText}>Reintentar pago</Text></TouchableOpacity></View>}
           {!!orderError && <FormErrorBanner message={orderError} onRetry={loadOrders} />}
           <View style={styles.historyFilters}><Text style={styles.historyFilterTitle}>Filtrar historial</Text><TextInput style={styles.historyFilterInput} value={historyClient} onChangeText={setHistoryClient} placeholder="Cliente" placeholderTextColor={colors.textSecondary} maxLength={40} /><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.historyStatusFilters}><TouchableOpacity style={[styles.historyStatusChip, !historyStatus && styles.historyStatusChipActive]} onPress={() => setHistoryStatus(null)}><Text style={[styles.historyStatusText, !historyStatus && styles.historyStatusTextActive]}>Todos</Text></TouchableOpacity>{(Object.keys(statusCopy) as Array<keyof typeof statusCopy>).map(status => { const selected = historyStatus === status; const chipStyle = status === 'DELIVERED' ? styles.statusDelivered : status === 'CANCELLED' ? styles.statusCancelled : status === 'IN_ROUTE' ? styles.statusInRoute : styles.statusPending; const labelStyle = status === 'DELIVERED' ? styles.statusDeliveredText : status === 'CANCELLED' ? styles.statusCancelledText : status === 'IN_ROUTE' ? styles.statusInRouteText : styles.statusPendingText; return <TouchableOpacity key={status} style={[styles.historyStatusChip, selected && chipStyle]} onPress={() => setHistoryStatus(selected ? null : status)}><Text style={[styles.historyStatusText, selected && labelStyle]}>{statusCopy[status]}</Text></TouchableOpacity>; })}</ScrollView></View>
           {loadingOrders ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : pageHistoryOrders.length ? pageHistoryOrders.map(renderOrder) : <View style={styles.emptyCard}><Ionicons name="file-tray-outline" size={28} color={colors.textSecondary} /><Text style={styles.emptyTitle}>{orders.length ? 'Sin coincidencias' : 'Todavía no hay pedidos'}</Text><Text style={styles.emptyText}>{orders.length ? 'Probá cambiando los filtros del historial.' : 'Cuando registres uno, aparecerá acá.'}</Text></View>}
@@ -888,7 +890,7 @@ export default function OrdersScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>4. Fecha de entrega</Text><Text style={styles.sectionHint}>Indicá cuándo debe entregarse el pedido</Text></View></View>
             <Text style={styles.dateLabel}>Fecha de entrega</Text>
-            <TouchableOpacity style={styles.datePickerButton} onPress={() => { const date = new Date(`${deliveryDate}T00:00:00`); setCalendarMonth(Number.isNaN(date.getTime()) ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(date.getFullYear(), date.getMonth(), 1)); setCalendarOpen(true); }} disabled={submitting}><Ionicons name="calendar-outline" size={19} color={colors.primary} /><Text style={styles.datePickerValue}>{formatDate(deliveryDate)}</Text><Text style={styles.datePickerHint}>Seleccionar</Text><Ionicons name="chevron-down" size={18} color={colors.primary} /></TouchableOpacity>
+            <TouchableOpacity style={styles.datePickerButton} onPress={() => setCalendarOpen(true)} disabled={submitting}><Ionicons name="calendar-outline" size={19} color={colors.primary} /><Text style={styles.datePickerValue}>{formatDate(deliveryDate)}</Text><Text style={styles.datePickerHint}>Seleccionar</Text><Ionicons name="chevron-down" size={18} color={colors.primary} /></TouchableOpacity>
             <Text style={styles.truckLabel}>Camión <Text style={styles.optionalLabel}>(opcional)</Text></Text>
             {!!truckError && <FormErrorBanner message={truckError} onRetry={loadTrucks} />}
             {loadingTrucks ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : trucks.length ? (
@@ -1013,17 +1015,17 @@ export default function OrdersScreen() {
                 ['partial', 'Pago parcial', 'Registrar un importe y dejar el saldo pendiente'],
               ] as [DeliveryPaymentChoice, string, string][]).map(([choice, title, subtitle]) => {
                 const selected = deliveryChoice === choice;
-                return <TouchableOpacity key={choice} style={[styles.deliveryChoice, selected && styles.deliveryChoiceSelected]} onPress={() => { setDeliveryChoice(choice); setDeliveryPaymentMethod(null); setDeliveryAmount(''); setMixedCashAmount(''); setMixedTransferAmount(''); setDeliveryError(null); }} disabled={deliverySubmitting} accessibilityRole="radio" accessibilityState={{ selected }}>
+                return <TouchableOpacity key={choice} style={[styles.deliveryChoice, selected && styles.deliveryChoiceSelected]} onPress={() => { setDeliveryChoice(choice); setDeliveryAmount(''); setMixedCashAmount(''); setDeliveryError(null); }} disabled={deliverySubmitting || deliveryAlreadyMarked} accessibilityRole="radio" accessibilityState={{ selected }}>
                   <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color={selected ? colors.primary : colors.textSecondary} />
                   <View style={styles.deliveryChoiceCopy}><Text style={styles.deliveryChoiceTitle}>{title}</Text><Text style={styles.deliveryChoiceSubtitle}>{subtitle}</Text></View>
                 </TouchableOpacity>;
               })}
               {deliveryChoice === 'partial' && <View style={styles.deliveryAmountField}>
                 <Text style={styles.deliveryAmountLabel}>Importe recibido</Text>
-                <TextInput value={formatArgentineAmountInput(deliveryAmount)} onChangeText={value => { setDeliveryAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting && !deliveryAlreadyMarked} />
+                <TextInput value={formatArgentineAmountInput(deliveryAmount)} onChangeText={value => { setDeliveryAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="$ 0" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting} />
                 {!!deliveryOrder && <Text style={styles.deliveryAmountHint}>Quedarán {money(Math.max(0, deliveryOrder.total - (Number(deliveryAmount.replace(',', '.')) || 0)))} en cuenta corriente.</Text>}
               </View>}
-              {deliveryChoice !== null && deliveryChoice !== 'account' && <View style={styles.deliveryAmountField}><Text style={styles.deliveryAmountLabel}>Forma de pago</Text><View style={styles.paymentMethods}>{([['cash', 'Efectivo'], ['transfer', 'Transferencia'], ['mixed', 'Mixto']] as [ReceiptPaymentMethod, string][]).map(([method, label]) => <TouchableOpacity key={method} style={[styles.paymentMethod, receiptPaymentMethod === method && styles.paymentMethodActive]} onPress={() => setReceiptPaymentMethod(method)} disabled={deliverySubmitting || deliveryAlreadyMarked}><Text style={[styles.paymentMethodText, receiptPaymentMethod === method && styles.paymentMethodTextActive]}>{label}</Text></TouchableOpacity>)}</View>{receiptPaymentMethod === 'mixed' && <TextInput value={formatArgentineAmountInput(mixedCashAmount)} onChangeText={value => { setMixedCashAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="Importe en efectivo" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting && !deliveryAlreadyMarked} />}</View>}
+              {deliveryChoice !== null && deliveryChoice !== 'account' && <View style={styles.deliveryAmountField}><Text style={styles.deliveryAmountLabel}>Forma de pago</Text><View style={styles.paymentMethods}>{([['cash', 'Efectivo'], ['transfer', 'Transferencia'], ['mixed', 'Mixto']] as [ReceiptPaymentMethod, string][]).map(([method, label]) => <TouchableOpacity key={method} style={[styles.paymentMethod, receiptPaymentMethod === method && styles.paymentMethodActive]} onPress={() => setReceiptPaymentMethod(method)} disabled={deliverySubmitting}><Text style={[styles.paymentMethodText, receiptPaymentMethod === method && styles.paymentMethodTextActive]}>{label}</Text></TouchableOpacity>)}</View>{receiptPaymentMethod === 'mixed' && <TextInput value={formatArgentineAmountInput(mixedCashAmount)} onChangeText={value => { setMixedCashAmount(value.replace(/\D/g, '').slice(0, 11)); setDeliveryError(null); }} style={styles.deliveryAmountInput} placeholder="Importe en efectivo" keyboardType="number-pad" maxLength={14} editable={!deliverySubmitting} />}</View>}
               {!!deliveryError && <View style={styles.deliveryErrorBox}><Ionicons name="alert-circle-outline" size={18} color={colors.error} /><Text style={styles.deliveryErrorText}>{deliveryError}</Text></View>}
               <Text style={styles.deliveryFootnote}>{deliveryChoice === 'account' ? 'El importe total queda pendiente en la cuenta corriente del cliente.' : deliveryChoice ? 'La forma de pago se incluye en el comprobante PDF.' : 'Elegí una opción para ver cómo se reflejará el pago en la cuenta corriente.'}</Text>
               <View style={styles.deliveryActions}>
@@ -1072,6 +1074,21 @@ export default function OrdersScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+      <Modal visible={productPickerOpen} transparent animationType="slide" onRequestClose={() => setProductPickerOpen(false)}>
+        <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
+          <View style={styles.selectorHeader}><View><Text style={styles.selectorEyebrow}>PRODUCTOS</Text><Text style={styles.selectorTitle}>Agregar al pedido</Text></View><TouchableOpacity onPress={() => setProductPickerOpen(false)} accessibilityLabel="Cerrar productos"><Ionicons name="close" size={23} color={colors.textPrimary} /></TouchableOpacity></View>
+          <View style={styles.selectorSearch}><Ionicons name="search-outline" size={18} color={colors.textSecondary} /><TextInput style={styles.selectorSearchInput} value={productPickerSearch} onChangeText={setProductPickerSearch} placeholder="Buscar producto, código o categoría" placeholderTextColor={colors.textSecondary} maxLength={60} autoCorrect={false} />{!!productPickerSearch && <TouchableOpacity onPress={() => setProductPickerSearch('')} accessibilityLabel="Borrar búsqueda"><Ionicons name="close-circle" size={19} color={colors.textSecondary} /></TouchableOpacity>}</View>
+          {!!productPickerError && <FormErrorBanner message={productPickerError} onRetry={() => void openCatalog()} disabled={loadingProductPicker} />}
+          {loadingProductPicker ? <ActivityIndicator color={colors.primary} style={styles.loader} /> : <ScrollView keyboardShouldPersistTaps="handled">
+            {visiblePickerProducts.map(product => <TouchableOpacity key={product.id} style={styles.selectorOption} onPress={() => addItem(product)} accessibilityRole="button">
+              <View style={styles.selectorOptionCopy}><Text style={styles.selectorOptionTitle}>{product.name}</Text><Text style={styles.selectorOptionSub}>{product.category.name} · {money(product.price)} / {product.unit}{product.sku ? ` · ${product.sku}` : ''}</Text></View>
+              <Ionicons name={items.some(item => item.productId === product.id) ? 'add-circle' : 'add-circle-outline'} size={23} color={colors.primary} />
+            </TouchableOpacity>)}
+            {!visiblePickerProducts.length && <Text style={styles.selectorEmpty}>{availableProducts.length ? 'No hay productos que coincidan con la búsqueda.' : 'No hay productos activos disponibles.'}</Text>}
+          </ScrollView>}
+          {!!items.length && <Text style={styles.selectorHint}>{items.length} {items.length === 1 ? 'producto' : 'productos'} en el pedido · {money(total())}</Text>}
+        </View></View>
       </Modal>
       <Modal visible={clientPickerOpen} transparent animationType="slide" onRequestClose={() => setClientPickerOpen(false)}>
         <View style={styles.selectorBackdrop}><View style={styles.selectorModal}>
@@ -1158,6 +1175,11 @@ const styles = StyleSheet.create({
   selectorOptionTitle: { ...typography.label, color: colors.textPrimary },
   selectorOptionSub: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   selectorEmpty: { ...typography.body, color: colors.textSecondary, textAlign: 'center', padding: spacing.xl },
+  selectorHint: { ...typography.caption, color: colors.textSecondary, textAlign: 'center', paddingTop: spacing.md },
+  pendingPaymentBanner: { padding: spacing.md, marginBottom: spacing.md, borderRadius: radius.md, backgroundColor: colors.errorLight },
+  pendingPaymentText: { ...typography.body, color: colors.error },
+  pendingPaymentButton: { alignSelf: 'flex-start', marginTop: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm, backgroundColor: colors.error },
+  pendingPaymentButtonText: { ...typography.label, color: colors.textInverse },
   calendarBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg, backgroundColor: 'rgba(0,0,0,0.45)' },
   calendarModal: { width: '100%', maxWidth: 380, padding: spacing.lg, borderRadius: radius.lg, backgroundColor: colors.surface },
   calendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.lg },

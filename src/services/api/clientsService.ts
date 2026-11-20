@@ -78,7 +78,7 @@ function toIClient(dto: CustomerDto): IClient {
   return {
     id: String(dto.id),
     businessName: dto.businessName,
-    taxId: dto.taxId,
+    taxId: String(dto.taxId ?? ''),
     phone: dto.phone,
     email: dto.email,
     active: dto.active,
@@ -259,7 +259,13 @@ export const clientsService = {
     const response = await client.post<CustomerDto>('/customers', body);
     const created = toIClient(response.data);
     if (response.data.id != null && dto.addresses?.length) {
-      created.addresses = await this.getClientAddresses(String(response.data.id));
+      // The customer POST is already successful. A follow-up address read must
+      // not make the form report that the whole customer creation failed.
+      try {
+        created.addresses = await this.getClientAddresses(String(response.data.id));
+      } catch {
+        created.addresses = (response.data.addresses ?? []).map(toIAddress);
+      }
     }
     return created;
   },

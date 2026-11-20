@@ -61,19 +61,7 @@ export function useAuth() {
       if (axios.isAxiosError(e) && !e.response) {
         setError("No se pudo conectar con el servidor");
       } else if (status === 401) {
-        const backendMessage = e?.response?.data?.message;
-        if (
-          typeof backendMessage === "string" &&
-          /authentication is required or invalid/i.test(backendMessage)
-        ) {
-          setError("Contraseña incorrecta.");
-        } else {
-          setError(
-            typeof backendMessage === "string"
-              ? backendMessage
-              : "Email o contraseña incorrectos",
-          );
-        }
+        setError("Email o contraseña incorrectos.");
       } else if (status === 403) {
         setError("El usuario no tiene permiso para iniciar sesión");
       } else {
